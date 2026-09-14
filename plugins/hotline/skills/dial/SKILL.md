@@ -366,6 +366,16 @@ RESPONSE=$(jq -r '.response' "$CALL_DIR/response.json")
 printf '%s\n' "$RESPONSE"
 ```
 
+**A wait that outruns your tool timeout gets backgrounded exactly once, by the
+harness.** The default budget (1800s on cmux/herdr) outlasts any foreground Bash
+call, so hand the blocking call to your harness's own backgrounding — Claude
+Code's `run_in_background` — and add nothing on top of it. Wrapping it in
+`nohup … &` as well leaves the harness tracking the wrapper shell, which exits
+in milliseconds: you get a plausible immediate "exit 0" and then no notification
+ever arrives when the waiter actually finishes. Where no backgrounding exists,
+don't improvise one — let the foreground call time out and re-run the wait,
+which resumes on a fresh budget and sends nothing (below).
+
 Read the response **from `response.json`**, as above — not from the script's
 captured stdout piped into `jq`. Under zsh (the Bash tool's shell) `echo` on
 captured JSON mangles backslash escapes (`\n`, `\f`, `\u001b`, …) into raw
