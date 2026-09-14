@@ -49,6 +49,15 @@ socket_stub_start() {
   local sock args=() i
   mkdir -p "$dir"
   sock="$dir/cmux.sock"
+  # A unix socket address caps at 104 bytes, and macOS hands tests a 48-byte
+  # $TMPDIR, so a descriptive sandbox or case name silently blows the cap. The
+  # bind then fails inside the script under test, which reports it as a paste
+  # failure — true, but it reads like a product bug rather than a suite whose
+  # path is too long. Say which it is, here, before the bind.
+  if (( ${#sock} > 103 )); then
+    printf 'SUITE BUG: socket path is %d bytes, over the 104-byte AF_UNIX cap: %s\n' \
+      "${#sock}" "$sock" >&2
+  fi
   # --watch-pid is the SUITE shell ($$), not this subshell: socket_stub_start is
   # usually called inside $(...) whose subshell exits at once, so the stub must
   # watch the durable owner to know when the run is truly over. $$ stays the main

@@ -79,7 +79,12 @@ REAL_PYTHON3="$(command -v python3)"
 # same guard because a missing stub really did launch a `claude --resume` pane on
 # every run of that suite.)
 # ---------------------------------------------------------------------------
-ROOT="$(mktemp -d "$TMP_ROOT"/hotline-transport-test-XXXXXX)"
+# The sandbox name stays SHORT. The reuse case builds its control socket under
+# $ROOT, and a unix socket address caps at 104 bytes — which macOS's 48-byte
+# $TMPDIR leaves little room for. (cmux-reuse-surface_test.sh shortens its case
+# names for the same reason; socket_stub_start says so out loud if a path is
+# over.) claude-plugins-ai7s
+ROOT="$(mktemp -d "$TMP_ROOT"/hotline-tsig-XXXXXX)"
 POISON_BIN="$ROOT/poison-bin"
 POISON_LOG="$ROOT/violations"
 mkdir -p "$POISON_BIN"

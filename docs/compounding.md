@@ -321,6 +321,11 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   terminal.paste rework — portability bugs (BSD-only `stat`, `getppid` reparenting
   under command substitution) surface only there. Read the CI conclusion for a
   change, not just local output. (289ef4a, ad10bbf)
+  It cuts the other way too, with its own mechanism: macOS hands a suite a 48-byte
+  `$TMPDIR` against AF_UNIX's 104-byte cap, so a descriptive sandbox or case name
+  makes a socket-stub suite fail on macOS while CI's `/tmp` stays green. Keep those
+  names short; `socket_stub_start` says so out loud when a path is over.
+  (claude-plugins-ai7s, cmux-reuse-surface_test.sh:1068)
 - **A fixture has to model the state the bug destroys, not a milder version of it.** A
   "user has scrolled up" screen that still rendered the input box left every
   box-shaped gate working, so no test could have caught the reads that followed the
