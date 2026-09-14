@@ -18,11 +18,11 @@ allowed-tools: "Bash(bash */scripts/slack.sh *) Read"
 
 Getting Slack context to Claude by copy/paste is slow and lossy — it drops reply structure, real timestamps, thread links, and edit markers, which is exactly the detail an investigation needs. This skill reads Slack directly through the Web API and prints clean text you can act on.
 
-It is **read-only** and scoped to **your own visibility** — only the channels and DMs the token owner is already a member of. It cannot post, edit, or delete anything.
+It is **read-only** and scoped to **your own visibility** — only the channels and DMs the token owner is already a member of. It cannot post, edit, or delete anything. Sending *to* Slack is the companion `notify-slack` skill, which holds a separate credential that can only post to one channel.
 
 ## Setup (one time)
 
-The script needs a Slack **user token** (`xoxp-…`) and the `curl` + `jq` tools. If setup isn't done yet, see the plugin README (`../../README.md`) for the full walkthrough of creating the Slack app, requesting install approval, and minting the token. Provide the token one of two ways:
+The script needs a Slack **user token** (`xoxp-…`) and the `curl` + `jq` tools. If setup isn't done yet, the plugin README has the full walkthrough of creating the Slack app, requesting install approval, and minting the token. It is at `${CLAUDE_PLUGIN_ROOT}/README.md` — Codex: substitute the installed plugin directory for that token. Provide the token one of two ways:
 
 - `export SLACK_USER_TOKEN=xoxp-…`, or
 - `export SLACK_TOKEN_OP_REF="op://Employee/Slack read-only/token"` (1Password ref; the script resolves it via `op read` so the token never lands in your shell env).
