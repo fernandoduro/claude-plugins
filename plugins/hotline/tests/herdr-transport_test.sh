@@ -108,7 +108,9 @@ export HOTLINE_HERDR_BLOCKED_SETTLE=0
 # the "off by default" assertions pass or fail depending on their environment.
 unset HERDR_ENV HERDR_PANE_ID HERDR_WORKSPACE_ID HERDR_TAB_ID \
       HOTLINE_DANGEROUSLY_SKIP_PERMISSIONS HOTLINE_CLAUDE_MODEL \
-      HOTLINE_HERDR_PANE HOTLINE_HERDR_SPLIT_DIRECTION 2>/dev/null || true
+      HOTLINE_HERDR_PANE HOTLINE_HERDR_SPLIT_DIRECTION \
+      HOTLINE_HERDR_PLACEMENT HOTLINE_HERDR_WORKSPACE HOTLINE_HERDR_TAB_LABEL \
+      2>/dev/null || true
 
 cleanup() { rm -rf "$ROOT" "$HOTLINE_SSH_CONTROL_HOME"; }
 trap cleanup EXIT
@@ -123,6 +125,18 @@ trap cleanup EXIT
 #   HERDR_STUB_PANE           the pane `pane list` reports (default w1:p1)
 #   HERDR_STUB_NEW_PANE       the pane `pane split` returns (default w1:p9)
 #   HERDR_STUB_SPLIT_FAIL=1   `pane split` returns a server error
+#   HERDR_STUB_PANE_WS        the workspace_id `pane get` reports for the anchor
+#                             (default: the pane id's own `wN` prefix, as the real
+#                             CLI does — pane ids are workspace-qualified)
+#   HERDR_STUB_PANE_GET_FAIL=1 `pane get` returns a server error
+#   HERDR_STUB_TAB_PANE       the root pane `tab create` returns (default w1:p7)
+#   HERDR_STUB_TAB_ID         the tab id `tab create` returns (default w1:t7)
+#   HERDR_STUB_TAB_FAIL=1     `tab create` returns a server error
+#   HERDR_STUB_TAB_NO_PANE=1  `tab create` succeeds but reports no root pane id
+#   HERDR_STUB_WORKSPACES     space-separated `<id>:<label>` pairs `workspace list`
+#                             reports (default: none — every label is absent)
+#   HERDR_STUB_NEW_WS         the workspace_id `workspace create` returns (default w5)
+#   HERDR_STUB_WS_CREATE_FAIL=1 `workspace create` returns a server error
 #   HERDR_STUB_BUSY_TIMES=N   the first N `agent start` calls fail agent_pane_busy
 #   HERDR_STUB_START_FAIL=1   `agent start` fails with a non-retryable error
 #   HERDR_STUB_READY=false    `agent start` reports interactive_ready:false
@@ -200,6 +214,44 @@ case "$1 ${2:-}" in
     exit 0 ;;
 
   "pane close") echo '{"id":"cli:pane:close","result":{"closed":true}}'; exit 0 ;;
+
+  "pane get")
+    [[ "${HERDR_STUB_PANE_GET_FAIL:-}" == "1" ]] && err pane_not_found "no such pane $3"
+    # Pane ids are workspace-qualified (`w6:p1`), and the real CLI reports the
+    # owning workspace on the pane. Derive it the same way rather than inventing an
+    # id a caller could not have asked about.
+    jq -nc --arg p "$3" --arg ws "${HERDR_STUB_PANE_WS:-${3%%:*}}" \
+      '{id:"cli:pane:get",result:{pane:{pane_id:$p,workspace_id:$ws,tab_id:($ws + ":t1")},type:"pane_info"}}'
+    exit 0 ;;
+
+  "tab create")
+    [[ "${HERDR_STUB_TAB_FAIL:-}" == "1" ]] && err tab_create_failed "no such workspace"
+    TP="${HERDR_STUB_TAB_PANE:-w1:p7}"
+    [[ "${HERDR_STUB_TAB_NO_PANE:-}" == "1" ]] && TP=""
+    jq -nc --arg p "$TP" --arg tid "${HERDR_STUB_TAB_ID:-w1:t7}" \
+      '{id:"cli:tab:create",result:{type:"tab_created",
+         tab:{tab_id:$tid,pane_count:1},
+         root_pane:(if $p == "" then {} else {pane_id:$p,tab_id:$tid} end)}}'
+    exit 0 ;;
+
+  "tab close") echo '{"id":"cli:tab:close","result":{"type":"ok"}}'; exit 0 ;;
+
+  "workspace list")
+    WSJSON="[]"
+    for _w in ${HERDR_STUB_WORKSPACES:-}; do
+      WSJSON=$(jq -c --arg id "${_w%%:*}" --arg l "${_w#*:}" \
+        '. + [{workspace_id:$id,label:$l}]' <<<"$WSJSON")
+    done
+    jq -nc --argjson ws "$WSJSON" '{id:"cli:workspace:list",result:{type:"workspace_list",workspaces:$ws}}'
+    exit 0 ;;
+
+  "workspace create")
+    [[ "${HERDR_STUB_WS_CREATE_FAIL:-}" == "1" ]] && err workspace_create_failed "could not create"
+    NW="${HERDR_STUB_NEW_WS:-w5}"
+    jq -nc --arg ws "$NW" '{id:"cli:workspace:create",result:{type:"workspace_created",
+      workspace:{workspace_id:$ws},root_pane:{pane_id:($ws + ":p1"),tab_id:($ws + ":t1")},
+      tab:{tab_id:($ws + ":t1")}}}'
+    exit 0 ;;
 
   "agent start")
     NAME="$3"
@@ -721,6 +773,192 @@ check "an OBSERVED session id different from the preset wins (the transcript pat
 [[ -s "$cd_path/session_id_mismatch.txt" ]]
 check "…and the disagreement is recorded rather than swallowed" $? \
   "call_dir: $(ls "$cd_path" | tr '\n' ' ')"
+
+# ===========================================================================
+echo ""
+echo "2b. Placement: a split, a tab, or a tab in a named group workspace:"
+# ===========================================================================
+# WHY THIS EXISTS. Every callee used to be a SPLIT off the anchor pane, so an
+# orchestrator dialling 15 callees off one pane produced one tab holding 17
+# slivers — unreadable, and the leftmost panes unreachable. HOTLINE_HERDR_PLACEMENT
+# buys a tab per callee, and a named workspace to group a run's callees into.
+
+# --- the default is byte-identical to what shipped -------------------------
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" HERDR_STUB_NEW_PANE="w1:p9" \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>/dev/null)
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+log=$(tr -d '\\' < "$t/herdr.log")
+[[ "$log" == *"pane split --pane w1:p1 --direction right --cwd $(cd "$t/target" && pwd -P) --no-focus"* ]]
+check "no placement named → still ONE pane split, argv unchanged" $? "herdr calls: $log"
+! grep -q "tab create\|workspace list\|workspace create\|pane get" "$t/herdr.log" 2>/dev/null
+check "…and no tab/workspace verb is reached at all" $? "herdr calls: $log"
+[[ "$(cat "$cd_path/herdr_pane.txt" 2>/dev/null)" == "w1:p9" \
+   && ! -f "$cd_path/herdr_tab.txt" && ! -f "$cd_path/herdr_workspace.txt" ]]
+check "…and a split records no tab or workspace handle" $? \
+  "call_dir: $(ls "$cd_path" | tr '\n' ' ')"
+[[ "$(cat "$cd_path/herdr_placement.txt" 2>/dev/null)" == "split" ]]
+check "…but DOES record the placement, so a reader never has to infer it" $? \
+  "got '$(cat "$cd_path/herdr_placement.txt" 2>/dev/null)'"
+
+# --- placement=tab: a tab in the anchor's own workspace --------------------
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w6:p1" HOTLINE_HERDR_PLACEMENT=tab \
+      HERDR_STUB_TAB_PANE="w6:p12" HERDR_STUB_TAB_ID="w6:t4" \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>"$t/err.txt")
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+log=$(tr -d '\\' < "$t/herdr.log")
+[[ -n "$cd_path" && ! -f "$cd_path/error.txt" ]]
+check "placement=tab launches without error" $? \
+  "out=$out error=$(cat "$cd_path/error.txt" 2>/dev/null) stderr=$(cat "$t/err.txt")"
+[[ "$log" == *"pane get w6:p1"* ]]
+check "…asks herdr which workspace OWNS the anchor pane" $? "herdr calls: $log"
+[[ "$log" == *"tab create --workspace w6 --cwd $(cd "$t/target" && pwd -P)"* ]]
+check "…creates the tab in THAT workspace, in the callee's canonical cwd" $? "herdr calls: $log"
+[[ "$log" == *"tab create"*"--no-focus"* ]]
+check "…with --no-focus (a booting callee must not hold the user's cursor)" $? "herdr calls: $log"
+! grep -q "pane split" "$t/herdr.log" 2>/dev/null
+check "…and NEVER splits the anchor pane" $? "herdr calls: $log"
+[[ "$(cat "$cd_path/herdr_pane.txt" 2>/dev/null)" == "w6:p12" ]]
+check "herdr_pane.txt names the new tab's ROOT PANE" $? \
+  "got '$(cat "$cd_path/herdr_pane.txt" 2>/dev/null)'"
+agent=$(cat "$cd_path/herdr_agent.txt" 2>/dev/null || true)
+[[ "$log" == *"agent start $agent --kind claude --pane w6:p12"* ]]
+check "…and agent start targets that pane, not the anchor" $? "herdr calls: $log"
+[[ "$(cat "$cd_path/herdr_tab.txt" 2>/dev/null)" == "w6:t4" \
+   && "$(cat "$cd_path/herdr_workspace.txt" 2>/dev/null)" == "w6" \
+   && "$(cat "$cd_path/herdr_placement.txt" 2>/dev/null)" == "tab" ]]
+check "records tab/workspace/placement, so a caller can label, move or close later" $? \
+  "tab='$(cat "$cd_path/herdr_tab.txt" 2>/dev/null)' ws='$(cat "$cd_path/herdr_workspace.txt" 2>/dev/null)' placement='$(cat "$cd_path/herdr_placement.txt" 2>/dev/null)'"
+
+# --- the default label: unique token FIRST, ≤20 chars ----------------------
+nonce=$(cat "$cd_path/call_id.txt" 2>/dev/null || true)
+label=$(sed -n 's/.*--label \([^ ]*\).*/\1/p' <<<"$log" | head -1)
+[[ -n "$label" && ${#label} -le 20 ]]
+check "the default tab label fits herdr's sidebar (≤20 chars)" $? "label='$label' (${#label} chars)"
+[[ "$label" == "${nonce: -6}-"* ]]
+check "…leads with the call nonce's last 6, since the sidebar truncates the TAIL" $? \
+  "label='$label' nonce='$nonce'"
+[[ "$label" == *"target"* ]]
+check "…and still carries the target directory after it" $? "label='$label'"
+
+# --- an explicit label wins ------------------------------------------------
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w6:p1" HOTLINE_HERDR_PLACEMENT=tab \
+      HOTLINE_HERDR_TAB_LABEL="boss-1-review" \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>/dev/null)
+log=$(tr -d '\\' < "$t/herdr.log")
+[[ "$log" == *"--label boss-1-review"* ]]
+check "HOTLINE_HERDR_TAB_LABEL is used verbatim" $? "herdr calls: $log"
+
+# --- placement=workspace, label ABSENT: create it, then tab into it --------
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" \
+      HOTLINE_HERDR_PLACEMENT=workspace HOTLINE_HERDR_WORKSPACE="agentic-run-boss-group-1" \
+      HERDR_STUB_WORKSPACES="w19:agentic-run-boss w1H:run-cli-38" \
+      HERDR_STUB_NEW_WS="w22" HERDR_STUB_TAB_PANE="w22:p3" HERDR_STUB_TAB_ID="w22:t2" \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>"$t/err.txt")
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+log=$(tr -d '\\' < "$t/herdr.log")
+[[ -n "$cd_path" && ! -f "$cd_path/error.txt" ]]
+check "placement=workspace with an unknown label launches without error" $? \
+  "out=$out error=$(cat "$cd_path/error.txt" 2>/dev/null) stderr=$(cat "$t/err.txt")"
+[[ "$log" == *"workspace list"* && "$log" == *"workspace create --label agentic-run-boss-group-1"* ]]
+check "…looks the label up, then creates the workspace it could not find" $? "herdr calls: $log"
+[[ "$log" == *"tab create --workspace w22"* ]]
+check "…and puts the callee's tab in the NEW workspace" $? "herdr calls: $log"
+[[ "$(cat "$cd_path/herdr_workspace.txt" 2>/dev/null)" == "w22" \
+   && "$(cat "$cd_path/herdr_placement.txt" 2>/dev/null)" == "workspace" ]]
+check "…recording the group's workspace id" $? \
+  "ws='$(cat "$cd_path/herdr_workspace.txt" 2>/dev/null)'"
+! grep -q "pane split" "$t/herdr.log" 2>/dev/null
+check "…and still never splits the anchor" $? "herdr calls: $log"
+
+# --- placement=workspace, label PRESENT: join it, create nothing -----------
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" \
+      HOTLINE_HERDR_PLACEMENT=workspace HOTLINE_HERDR_WORKSPACE="run-cli-38" \
+      HERDR_STUB_WORKSPACES="w19:agentic-run-boss w1H:run-cli-38" \
+      HERDR_STUB_TAB_PANE="w1H:p8" HERDR_STUB_TAB_ID="w1H:t8" \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>/dev/null)
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+log=$(tr -d '\\' < "$t/herdr.log")
+! grep -q "workspace create" "$t/herdr.log" 2>/dev/null
+check "an EXISTING group label is joined, never re-created" $? "herdr calls: $log"
+[[ "$log" == *"tab create --workspace w1H"* \
+   && "$(cat "$cd_path/herdr_workspace.txt" 2>/dev/null)" == "w1H" ]]
+check "…and the tab lands in the workspace that already carried that label" $? \
+  "herdr calls: $log ws='$(cat "$cd_path/herdr_workspace.txt" 2>/dev/null)'"
+
+# --- two callees, one group: the second joins the first's workspace ---------
+# The orchestrator's actual shape. A second dial with the same label must not
+# mint a second workspace, or a "group" is one workspace per member.
+t=$(new_env)
+env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+    HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" \
+    HOTLINE_HERDR_PLACEMENT=workspace HOTLINE_HERDR_WORKSPACE="grp" \
+    HERDR_STUB_WORKSPACES="w7:grp" HERDR_STUB_TAB_PANE="w7:p2" \
+    bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "one" >/dev/null 2>&1
+env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+    HERDR_STATE="$t/state2" HERDR_PANE_ID="w1:p1" \
+    HOTLINE_HERDR_PLACEMENT=workspace HOTLINE_HERDR_WORKSPACE="grp" \
+    HERDR_STUB_WORKSPACES="w7:grp" HERDR_STUB_TAB_PANE="w7:p3" \
+    bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "two" >/dev/null 2>&1
+[[ "$(grep -c 'tab create' "$t/herdr.log")" -eq 2 \
+   && "$(grep -c 'workspace create' "$t/herdr.log" 2>/dev/null || true)" -eq 0 ]]
+check "two dials into one group label → two tabs, ONE workspace" $? \
+  "tab creates: $(grep -c 'tab create' "$t/herdr.log") ws creates: $(grep -c 'workspace create' "$t/herdr.log" 2>/dev/null || echo 0)"
+
+# --- usage errors are refused BEFORE any state exists ----------------------
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" HOTLINE_HERDR_PLACEMENT=window \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>/dev/null); rc=$?
+[[ $rc -ne 0 && "$(jq -r '.error' <<<"$out" 2>/dev/null)" == *"split|tab|workspace"* ]]
+check "an unknown HOTLINE_HERDR_PLACEMENT is refused, naming the three it accepts" $? \
+  "rc=$rc out=$out"
+[[ ! -f "$t/herdr.log" ]]
+check "…before a single herdr call is made" $? "herdr calls: $(cat "$t/herdr.log" 2>/dev/null)"
+
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" HOTLINE_HERDR_PLACEMENT=workspace \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>/dev/null); rc=$?
+[[ $rc -ne 0 && "$(jq -r '.error' <<<"$out" 2>/dev/null)" == *"HOTLINE_HERDR_WORKSPACE"* ]]
+check "placement=workspace with no group label is refused, naming the variable" $? \
+  "rc=$rc out=$out"
+
+# --- a tab that could not be made is a failed dial, cleaned up -------------
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w6:p1" HOTLINE_HERDR_PLACEMENT=tab \
+      HERDR_STUB_TAB_FAIL=1 \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>/dev/null)
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+[[ -n "$cd_path" && -f "$cd_path/done" \
+   && "$(jq -r '.error' < "$cd_path/error.txt" 2>/dev/null)" == *"tab create"* ]]
+check "a tab create failure writes error.txt + done and still returns a call_dir" $? \
+  "out=$out error=$(cat "$cd_path/error.txt" 2>/dev/null)"
+
+# A failed launch in a TAB closes the TAB, not just its pane — and never the
+# group workspace, which the callee's siblings are living in.
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" \
+      HOTLINE_HERDR_PLACEMENT=workspace HOTLINE_HERDR_WORKSPACE="grp" \
+      HERDR_STUB_WORKSPACES="w7:grp" HERDR_STUB_TAB_ID="w7:t9" \
+      HERDR_STUB_START_FAIL=1 \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>/dev/null)
+log=$(tr -d '\\' < "$t/herdr.log")
+[[ "$log" == *"tab close w7:t9"* ]]
+check "a failed agent start closes the TAB it created" $? "herdr calls: $log"
+! grep -q "workspace close" "$t/herdr.log" 2>/dev/null
+check "…and never the group workspace its siblings are living in" $? "herdr calls: $log"
 
 # ===========================================================================
 echo ""
@@ -2567,10 +2805,16 @@ DIAL_SKILL="$HOTLINE_DIR/skills/dial/SKILL.md"
 # would assert nothing.
 SKILL_FLAT=$(tr '\n' ' ' < "$DIAL_SKILL" | tr -s ' ')
 
-[[ "$SKILL_FLAT" == *'HOTLINE_HERDR_SPLIT_DIRECTION=right|down`** — which way that split goes (default `right`)'* ]] \
+[[ "$SKILL_FLAT" == *'HOTLINE_HERDR_SPLIT_DIRECTION=right|down`** — which way a `split` placement goes (default `right`)'* ]] \
   && grep -q 'HOTLINE_HERDR_SPLIT_DIRECTION:-right' "$HERDR_ASYNC"
 check "SKILL.md's split-direction default matches herdr-call-async.sh" $? \
   "script: $(grep -o 'HOTLINE_HERDR_SPLIT_DIRECTION:-[a-z]*' "$HERDR_ASYNC")"
+
+[[ "$SKILL_FLAT" == *'HOTLINE_HERDR_PLACEMENT=split|tab|workspace`** — where the callee'* \
+   && "$SKILL_FLAT" == *'(default `split`, a sibling of the anchor pane)'* ]] \
+  && grep -q 'HOTLINE_HERDR_PLACEMENT:-split}' "$HERDR_ASYNC"
+check "SKILL.md's placement default matches herdr-call-async.sh" $? \
+  "script: $(grep -o 'HOTLINE_HERDR_PLACEMENT:-[a-z]*' "$HERDR_ASYNC")"
 
 [[ "$SKILL_FLAT" == *'freshly split pane (default 1)'* ]] \
   && grep -q 'HOTLINE_HERDR_PANE_SETTLE:-1}' "$HERDR_ASYNC"

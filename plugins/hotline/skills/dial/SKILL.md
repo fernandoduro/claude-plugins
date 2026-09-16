@@ -515,8 +515,22 @@ above still does that:
 - **`HOTLINE_HERDR_PANE=<pane-id>`** — the pane hotline splits to host the callee.
   Defaults to the caller's own `$HERDR_PANE_ID`, then to the first pane herdr
   reports. Name one when the automatic choice lands somewhere awkward.
-- **`HOTLINE_HERDR_SPLIT_DIRECTION=right|down`** — which way that split goes
-  (default `right`).
+- **`HOTLINE_HERDR_PLACEMENT=split|tab|workspace`** — where the callee's pane goes
+  (default `split`, a sibling of the anchor pane). `tab` gives the callee its own
+  tab in the workspace that owns the anchor; `workspace` gives it its own tab inside
+  the group workspace named by `HOTLINE_HERDR_WORKSPACE`. Name one of the latter two
+  when a run dials several callees off one pane: as splits they land in a single tab,
+  and past a handful of slivers the leftmost panes cannot be reached.
+- **`HOTLINE_HERDR_WORKSPACE=<label>`** — the group workspace `placement=workspace`
+  hosts the callee in, looked up by label and created if no workspace answers to it.
+  Required for that placement, ignored by the other two. One label per group, chosen
+  by the caller, is how a run's callees end up together.
+- **`HOTLINE_HERDR_TAB_LABEL=<text>`** — the callee's tab label, for a `tab` or
+  `workspace` placement. Defaults to the call nonce's last 6 characters followed by
+  the target directory, 20 characters in all: herdr's sidebar truncates the tail, and
+  a run's callees usually share one repo, so the unique token leads.
+- **`HOTLINE_HERDR_SPLIT_DIRECTION=right|down`** — which way a `split` placement
+  goes (default `right`).
 - **`HOTLINE_HERDR_PANE_SETTLE=<seconds>`** — pause before starting the agent in a
   freshly split pane (default 1). `agent start` requires the pane to be at its shell
   prompt, and starting too early fails `agent_pane_busy` (which is then retried).

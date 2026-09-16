@@ -22,6 +22,11 @@
 #                           cmux surface. dial.sh reports it as the call's host ref.
 #   herdr_pane.txt        — the pane the agent runs in. Diagnostic, and what the
 #                           failure paths here close so a failed dial leaks nothing.
+#   herdr_placement.txt   — 'split' | 'tab' | 'workspace': how that pane was made.
+#   herdr_tab.txt         — the tab hosting the callee, for a tab/workspace
+#                           placement; ABSENT for a split, which makes no tab.
+#   herdr_workspace.txt   — the workspace hosting that tab. Both are here so a
+#                           caller can re-label, move or close the host later.
 #   remote_target.txt     — the ssh target hosting this callee, for a --remote dial;
 #                           ABSENT for a local one. Written with the dir because
 #                           wait-for-response.sh is a separate process that receives
@@ -54,10 +59,11 @@
 # The cost is honest and worth stating: a herdr call leaves a pane behind, and the
 # caller (or the user) closes it — `herdr pane close <herdr_pane.txt>`, or
 # `ssh <remote_target.txt> herdr pane close <herdr_pane.txt>` for a remote call.
+# A tab or workspace placement leaves a tab too: `herdr tab close <herdr_tab.txt>`.
 #
 # A REMOTE CALLEE IS THE SAME LAUNCH, ON ANOTHER BOX. `$HOTLINE_HERDR_REMOTE` makes
-# every herdr verb below run over ssh (herdr-state.sh's dispatch), so the split and
-# the `agent start` are unchanged. What DOES change is the cwd: it names a directory
+# every herdr verb below run over ssh (herdr-state.sh's dispatch), so the placement
+# and the `agent start` are unchanged. What DOES change is the cwd: it names a directory
 # on THAT filesystem, so it is resolved and existence-checked over ssh rather than
 # locally — see the canonicalization note below, which is where a local check would
 # do real damage rather than merely be useless.
@@ -69,9 +75,11 @@
 #   #   plus "remote":"<ssh-target>" when $HOTLINE_HERDR_REMOTE hosted it
 #
 # --prompt-file is preferred: it keeps the payload out of argv end to end.
-# --detached is accepted and ignored, and so is a side placement: a herdr callee is
-# a pane split off the caller's, which is both — the placement word only changes
-# what dial.sh reports. `--window` never reaches here; dial.sh refuses it.
+# --detached is accepted and ignored, and so is a side placement: dial.sh's
+# placement vocabulary only changes what it reports. `--window` never reaches here;
+# dial.sh refuses it. WHERE the callee's pane actually goes is
+# $HOTLINE_HERDR_PLACEMENT — a sibling split (the default), its own tab, or a tab
+# in a named group workspace ($HOTLINE_HERDR_WORKSPACE). See the placement block.
 # =============================================================================
 set -uo pipefail
 
@@ -169,6 +177,24 @@ if [[ -n "$BOOT_TIMEOUT" && ! "$BOOT_TIMEOUT" =~ ^[0-9]+$ ]]; then
   die "--boot-timeout must be a whole number of seconds, got '$BOOT_TIMEOUT'"
 fi
 
+# WHERE THE CALLEE'S PANE LIVES. `split` is the default and stays byte-identical to
+# what shipped: existing callers expect a sibling pane, and the cached-surface
+# proofs re-target a pane split off the anchor. The other two exist because a split
+# does not scale — an orchestrator dialling 15 callees off one pane produced one tab
+# of 17 slivers, with the leftmost panes unreachable.
+#   tab       — one tab per callee, in the workspace that owns the anchor pane.
+#   workspace — one tab per callee inside a NAMED workspace, so a run's callees are
+#               grouped and the orchestrator picks the label per group.
+# Validated here, with the other usage errors: a typo must not cost a split pane.
+HERDR_PLACEMENT="${HOTLINE_HERDR_PLACEMENT:-split}"
+case "$HERDR_PLACEMENT" in
+  split|tab|workspace) ;;
+  *) die "HOTLINE_HERDR_PLACEMENT must be one of split|tab|workspace, got '$HERDR_PLACEMENT'" ;;
+esac
+if [[ "$HERDR_PLACEMENT" == "workspace" && -z "${HOTLINE_HERDR_WORKSPACE:-}" ]]; then
+  die "HOTLINE_HERDR_PLACEMENT=workspace needs the group's label in HOTLINE_HERDR_WORKSPACE"
+fi
+
 # Resolve the pane to split BEFORE creating any state: nothing to clean up if
 # there is no host to be had. check-herdr.sh has normally already proved this, but
 # this script is also a direct entry point.
@@ -239,26 +265,94 @@ fail_async() {  # fail_async <reason>
   # split behind is how a herdr session accumulates dead panes. Keep it on request
   # for post-mortem — the pane's scrollback is the only evidence of a launch that
   # died before the agent was detected.
-  if [[ -n "${NEW_PANE:-}" && -z "${HOTLINE_HERDR_KEEP_FAILED_PANE:-}" ]]; then
-    herdr_cli pane close "$NEW_PANE" >/dev/null 2>&1 || true
+  if [[ -z "${HOTLINE_HERDR_KEEP_FAILED_PANE:-}" ]]; then
+    # THE TAB, when we made one: closing only its root pane would leave an empty
+    # tab in the sidebar, which is the clutter the tab placement exists to fix.
+    # NEVER the workspace — a group workspace is shared, and this callee's siblings
+    # are living in it.
+    if [[ -n "${HOST_TAB:-}" ]]; then
+      herdr_cli tab close "$HOST_TAB" >/dev/null 2>&1 || true
+    elif [[ -n "${NEW_PANE:-}" ]]; then
+      herdr_cli pane close "$NEW_PANE" >/dev/null 2>&1 || true
+    fi
   fi
   jq -n --arg dir "$CALL_DIR" '{call_dir: $dir}'
   exit 0
 }
 
-# ---- Open the host: a sibling pane, in the callee's cwd. --------------------
+# ---- Open the host: a pane in the callee's cwd, placed per $HERDR_PLACEMENT. ---
 # --no-focus deliberately, for EVERY call including a conference: a callee whose
 # REPL is still booting must not hold the user's cursor, or their next keystrokes
 # land in it. A conference is focused later, by dial.sh, once the payload is
 # confirmed in the callee's transcript.
-SPLIT_DIRECTION="${HOTLINE_HERDR_SPLIT_DIRECTION:-right}"
 NEW_PANE=""
-herdr_cli pane split --pane "$SPLIT_FROM" \
-    --direction "$SPLIT_DIRECTION" --cwd "$CWD" --no-focus \
-  || fail_async "herdr pane split from $SPLIT_FROM failed: ${HERDR_CLI_ERR:-no diagnostic}"
-NEW_PANE=$(jq -r '.result.pane.pane_id // empty' <<<"$HERDR_CLI_OUT" 2>/dev/null)
-[[ -z "$NEW_PANE" ]] && fail_async "herdr pane split returned no pane id: $(printf '%s' "$HERDR_CLI_OUT" | tr -d '\n' | cut -c1-200)"
+HOST_TAB=""
+HOST_WORKSPACE=""
+
+if [[ "$HERDR_PLACEMENT" == "split" ]]; then
+  SPLIT_DIRECTION="${HOTLINE_HERDR_SPLIT_DIRECTION:-right}"
+  herdr_cli pane split --pane "$SPLIT_FROM" \
+      --direction "$SPLIT_DIRECTION" --cwd "$CWD" --no-focus \
+    || fail_async "herdr pane split from $SPLIT_FROM failed: ${HERDR_CLI_ERR:-no diagnostic}"
+  NEW_PANE=$(jq -r '.result.pane.pane_id // empty' <<<"$HERDR_CLI_OUT" 2>/dev/null)
+  [[ -z "$NEW_PANE" ]] && fail_async "herdr pane split returned no pane id: $(printf '%s' "$HERDR_CLI_OUT" | tr -d '\n' | cut -c1-200)"
+else
+  # WHICH WORKSPACE HOSTS THE TAB. For `tab`, the one that owns the anchor pane —
+  # asked of herdr rather than parsed out of the pane id, which is opaque by
+  # contract even though today's ids happen to be workspace-prefixed. For
+  # `workspace`, the one carrying the caller's group label, created if no workspace
+  # answers to it yet.
+  if [[ "$HERDR_PLACEMENT" == "workspace" ]]; then
+    herdr_cli workspace list \
+      || fail_async "herdr workspace list failed, so the group '$HOTLINE_HERDR_WORKSPACE' could not be looked up: ${HERDR_CLI_ERR:-no diagnostic}"
+    HOST_WORKSPACE=$(jq -r --arg l "$HOTLINE_HERDR_WORKSPACE" \
+      'first(.result.workspaces[]? | select(.label == $l) | .workspace_id) // empty' \
+      <<<"$HERDR_CLI_OUT" 2>/dev/null)
+    if [[ -z "$HOST_WORKSPACE" ]]; then
+      herdr_cli workspace create --label "$HOTLINE_HERDR_WORKSPACE" --cwd "$CWD" --no-focus \
+        || fail_async "herdr workspace create --label $HOTLINE_HERDR_WORKSPACE failed: ${HERDR_CLI_ERR:-no diagnostic}"
+      HOST_WORKSPACE=$(jq -r '.result.workspace.workspace_id // empty' <<<"$HERDR_CLI_OUT" 2>/dev/null)
+      [[ -z "$HOST_WORKSPACE" ]] && fail_async "herdr workspace create returned no workspace id: $(printf '%s' "$HERDR_CLI_OUT" | tr -d '\n' | cut -c1-200)"
+    fi
+  else
+    herdr_cli pane get "$SPLIT_FROM" \
+      || fail_async "herdr pane get $SPLIT_FROM failed, so the workspace to host the callee's tab is unknown: ${HERDR_CLI_ERR:-no diagnostic}"
+    HOST_WORKSPACE=$(jq -r '.result.pane.workspace_id // empty' <<<"$HERDR_CLI_OUT" 2>/dev/null)
+    [[ -z "$HOST_WORKSPACE" ]] && fail_async "herdr pane get $SPLIT_FROM reported no workspace_id: $(printf '%s' "$HERDR_CLI_OUT" | tr -d '\n' | cut -c1-200)"
+  fi
+
+  # THE UNIQUE TOKEN LEADS. herdr's sidebar truncates a label's TAIL, and a run's
+  # callees are typically all dialled into the SAME repo — so a directory-first
+  # label renders as fifteen identical tabs. Nonce first, directory after:
+  # 6 + 1 + 13 = 20 characters, which is what the sidebar shows unclipped.
+  TAB_LABEL="${HOTLINE_HERDR_TAB_LABEL:-}"
+  if [[ -z "$TAB_LABEL" ]]; then
+    LABEL_SLUG=$(printf '%s' "$(basename "$CWD")" \
+                 | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' \
+                 | tr -s '-' | sed 's/^-*//; s/-*$//' | cut -c1-13)
+    [[ -z "$LABEL_SLUG" ]] && LABEL_SLUG="call"
+    TAB_LABEL="${CALL_ID: -6}-$LABEL_SLUG"
+  fi
+
+  herdr_cli tab create --workspace "$HOST_WORKSPACE" --cwd "$CWD" \
+      --label "$TAB_LABEL" --no-focus \
+    || fail_async "herdr tab create in workspace $HOST_WORKSPACE failed: ${HERDR_CLI_ERR:-no diagnostic}"
+  # The tab's ROOT PANE is the host: `agent start` addresses a pane, and a fresh
+  # tab has exactly one. (Verified on herdr 0.8.2 — `tab create` reports it at
+  # .result.root_pane.pane_id and the tab at .result.tab.tab_id.)
+  NEW_PANE=$(jq -r '.result.root_pane.pane_id // empty' <<<"$HERDR_CLI_OUT" 2>/dev/null)
+  HOST_TAB=$(jq -r '.result.tab.tab_id // empty' <<<"$HERDR_CLI_OUT" 2>/dev/null)
+  [[ -z "$NEW_PANE" ]] && fail_async "herdr tab create returned no root pane id, so there is nothing to start the callee in: $(printf '%s' "$HERDR_CLI_OUT" | tr -d '\n' | cut -c1-200)"
+fi
+
+# Recorded so a caller can label, move or close the callee's host later — the
+# handles `pane move --workspace`, `tab close` and `workspace close` take. Written
+# alongside herdr_pane.txt, and only when the placement actually made one, so their
+# ABSENCE is what says "this callee is a split".
+echo "$HERDR_PLACEMENT" > "$CALL_DIR/herdr_placement.txt"
 echo "$NEW_PANE" > "$CALL_DIR/herdr_pane.txt"
+[[ -n "$HOST_TAB"       ]] && echo "$HOST_TAB"       > "$CALL_DIR/herdr_tab.txt"
+[[ -n "$HOST_WORKSPACE" ]] && echo "$HOST_WORKSPACE" > "$CALL_DIR/herdr_workspace.txt"
 
 # ---- Start the agent. -------------------------------------------------------
 # `agent start` requires the pane to be AT ITS INTERACTIVE SHELL PROMPT, and a
