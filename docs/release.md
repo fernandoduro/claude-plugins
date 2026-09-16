@@ -132,10 +132,22 @@ plugin surface.
 
 ## 4. Verify Claude Code
 
-For a plugin offered through the Claude marketplace, update the marketplace
-and install or update the plugin with the current Claude Code plugin commands.
-Then start a new session and run a representative `/<plugin>:<skill>` probe.
-Codex-native-only plugins have no Claude release step.
+For a plugin offered through the Claude marketplace, refresh the marketplace and
+then move the installed plugin to the new version:
+
+```bash
+claude plugin marketplace update <marketplace>
+claude plugin update <plugin-name>@<marketplace>
+claude plugin list          # read the reported Version — this is the check
+```
+
+`claude plugin update` is the step that moves the version.
+`claude plugin install` on an already-installed plugin exits **0** with
+*"already installed"* and leaves the old version live, so it cannot be used as
+the refresh — read the version `claude plugin list` reports rather than an
+install command's success. Then start a new session and run a representative
+`/<plugin>:<skill>` probe. Codex-native-only plugins have no Claude release
+step.
 
 Two Claude-side behaviors differ from Codex and are correct, not failures:
 
@@ -168,5 +180,6 @@ The same transition was observed on Codex CLI 0.148.0 with
 1.20.3 → 1.22.1 through the Directory path (`codex plugin add`), which also left
 only the new version cached. On 0.149.1 it reconciled identically for three
 plugins in one release (hotline 0.28.0, cmux-cli 0.12.0, maestro 0.2.0) on the
-Git-backed path. The reconciliation behavior is not specific to
+Git-backed path. On 0.154.0 it reconciled hotline 0.32.1 → 0.33.0 on the Git-backed path,
+leaving only 0.33.0 cached. The reconciliation behavior is not specific to
 0.147.0 or to Git-backed marketplaces.

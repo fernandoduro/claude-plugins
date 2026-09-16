@@ -362,6 +362,13 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
 - **A suite that can skip must be satisfiable, and skip counts get read.** Owned by
   CLAUDE.md § Testing (the gws incident) — kept here as a headline only so the
   preflight scans for it; the rule text lives there, not here.
+- **A refresh command that can no-op is not a version check — read the version
+  back.** `claude plugin install <plugin>@<marketplace>` exits 0 with *"already
+  installed"* on an installed plugin and leaves the previous version live: hotline's
+  Claude-side install sat at 0.32.0 while `main` carried 0.32.1, and that install
+  reported success without moving it. Refresh with `claude plugin update` and read
+  the version `claude plugin list` reports; docs/release.md §4 has the sequence.
+  (228dd59, docs/release.md §4)
 - **Flags become beads tasks at the moment of noticing.** "Worth fixing later" said
   in prose evaporates; `bd create` with `discovered-from` survives the session.
   (memory: feedback_flag_becomes_beads_task)
