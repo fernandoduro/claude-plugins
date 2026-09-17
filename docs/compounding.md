@@ -112,14 +112,20 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   (`cmux_handle_ok` in `plugins/hotline/scripts/repl-state.sh`), send snake_case
   params only, and compare `result.surface_id` against what you asked for — a wrong
   answer arrives as a successful one. (claude-plugins-r465.7, -r465.9)
-- **Address a cmux pane/surface by UUID, never by the positional `pane:N` you just
-  read out of a tree.** `cmux` resolves a positional ref *inside* a workspace context
-  that defaults to the caller's inherited `$CMUX_WORKSPACE_ID`, so a ref that is valid
-  in the tree fails as `not_found: Workspace not found` whenever the caller is itself
-  an agent-spawned surface living elsewhere — and refs renumber between the snapshot
-  and the call. Enumerate with `--id-format both` (without it every `.id` is null, so
-  you *cannot* target correctly), and if only a ref is available pin `--workspace`/
-  `--window` with it. (claude-plugins-xysx)
+- **Pin `--workspace`/`--window` on every cmux pane/surface call, and address the
+  target by UUID.** `cmux` resolves a target *inside* a workspace context that defaults
+  to the caller's inherited `$CMUX_WORKSPACE_ID`, and that scoping applies to a **UUID
+  exactly as it does to a positional `pane:N`** — a valid pane UUID whose workspace is
+  not the inherited one answers `not_found: Pane not found`, so "globally unique" is not
+  "needs no context". Pinning the container is what makes the call correct; the UUID is
+  what keeps it correct, since refs renumber between the snapshot and the call.
+  Enumerate with `--id-format both` (without it every `.id` is null, so you *cannot*
+  target correctly) and carry the workspace `.id` out of the same snapshot as the pane's.
+  The cost of getting this wrong compounds: hotline reads `not_found` as its documented
+  degrade, so every side-by-side dial from an agent-spawned session silently opened a
+  detached tab, and a detached first contact caches no surface, so each follow-up
+  degraded again. Guarded by `plugins/cmux-cli/tests/side-surface-scope_test.sh`.
+  (claude-plugins-xysx, -qyj1)
 - **Read a cmux screen with `--scrollback --lines N`; a bare read may only measure
   the pane** (`cmux_screen_rows`), never feed a content decision — bare reads follow
   the user's scroll. Guards enforce this in `plugins/hotline/tests/`

@@ -184,10 +184,11 @@ panes_tsv=$(cmux tree --all --json --id-format both | jq -r \
     | select(.ref == $win)
     | .workspaces[]
     | select(.ref == $ws)
+    | . as $wsobj
     | .panes
     | sort_by(.index)
     | .[]
-    | [.ref, (.index | tostring), (.id // "")]
+    | [.ref, (.index | tostring), (.id // ""), ($wsobj.id // "")]
     | @tsv
   ')
 
@@ -200,10 +201,12 @@ fi
 pane_refs=()
 pane_indexes=()
 pane_ids=()
-while IFS=$'\t' read -r p_ref p_idx p_id; do
+subject_ws_id=""
+while IFS=$'\t' read -r p_ref p_idx p_id p_ws_id; do
   pane_refs+=("$p_ref")
   pane_indexes+=("$p_idx")
   pane_ids+=("$p_id")
+  [[ -z "$subject_ws_id" ]] && subject_ws_id="$p_ws_id"
 done <<< "$panes_tsv"
 
 pane_count=${#pane_refs[@]}
@@ -237,24 +240,26 @@ else
   adjacent_pane="${pane_refs[$adj_pos]}"
   adjacent_pane_id="${pane_ids[$adj_pos]}"
   mode="new-surface"
-  # Target the adjacent pane by UUID, not by its positional ref. `cmux
-  # new-surface` resolves a bare `pane:N` *inside* a workspace context that
-  # defaults to $CMUX_WORKSPACE_ID (see `new-surface --help`), so a positional
-  # ref fails with `not_found: Workspace not found` whenever the caller's
-  # inherited workspace id is not the workspace that pane lives in — which is
-  # exactly what a hotline callee dialing onward hits. Refs also renumber as
-  # surfaces open and close, so the ref read out of the snapshot above can
-  # denote a different pane by the time this runs. A UUID is globally unique
-  # and needs no context. (The new-pane branch above pins an explicit
-  # --workspace for the same reason: never let cmux infer the container.)
+  # `cmux new-surface` scopes its --pane lookup to --workspace, which defaults
+  # to $CMUX_WORKSPACE_ID (see `new-surface --help`). That scoping applies to a
+  # pane UUID exactly as it does to a positional `pane:N`: a valid UUID whose
+  # workspace is not the inherited one comes back `not_found: Pane not found`.
+  # So the container is always pinned explicitly here — which is what a hotline
+  # callee dialing onward needs, since its inherited workspace id names the
+  # CALLER's workspace, not the one its own pane lives in. Prefer UUIDs for both
+  # pane and workspace: positional refs renumber as surfaces open and close, so
+  # a ref read out of the snapshot above can denote something else by the time
+  # this runs. (The new-pane branch above pins --workspace for the same reason:
+  # never let cmux infer the container.)
+  subject_ws_target="${subject_ws_id:-$subject_ws}"
   if [[ -n "$adjacent_pane_id" ]]; then
-    args=(new-surface --pane "$adjacent_pane_id" --type "$SURFACE_TYPE")
+    args=(new-surface --pane "$adjacent_pane_id" --type "$SURFACE_TYPE" \
+          --workspace "$subject_ws_target" --window "$subject_win")
   else
-    # No UUID available: keep the positional ref but pin the context it is
-    # resolved against, rather than letting it fall through to a possibly
-    # unrelated $CMUX_WORKSPACE_ID.
+    # No pane UUID available: keep the positional ref, pinned to the same
+    # context.
     args=(new-surface --pane "$adjacent_pane" --type "$SURFACE_TYPE" \
-          --workspace "$subject_ws" --window "$subject_win")
+          --workspace "$subject_ws_target" --window "$subject_win")
   fi
   [[ "$SURFACE_TYPE" == "browser" && -n "$URL" ]] && args+=(--url "$URL")
 fi
@@ -268,13 +273,11 @@ if ! out=$(cmux "${args[@]}" 2>&1); then
   # address it unambiguously. Say which, so the caller is not left guessing.
   if [[ "$out" == *"not_found"* ]]; then
     {
-      echo "  This is a targeting failure, not a missing pane: $subject_pane resolved"
-      echo "  in $subject_ws, but cmux could not resolve the target we handed it"
-      echo "  (${adjacent_pane_id:-$adjacent_pane})."
-      echo "  Usual cause: the caller's inherited CMUX_WORKSPACE_ID names a different"
-      echo "  workspace than the one its pane now lives in — common when the caller is"
-      echo "  itself an agent-spawned surface (e.g. a hotline callee dialing onward)."
-      echo "  Side-by-side needs that context; a detached workspace does not."
+      echo "  The target was pinned explicitly ($subject_ws_target /"
+      echo "  ${subject_win:-?} / ${adjacent_pane_id:-$adjacent_pane}), so this is not the"
+      echo "  inherited-workspace miss: something moved between the tree snapshot above"
+      echo "  and this call — the pane or its workspace closed, or the workspace was"
+      echo "  moved to another window. Re-run to snapshot again."
     } >&2
   fi
   exit 1

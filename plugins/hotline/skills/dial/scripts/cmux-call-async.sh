@@ -445,9 +445,11 @@ else
         #     (retried 5×); the caller pane was freshly spawned or moved and cmux
         #     hasn't re-registered it.
         #   rc=1 + not_found — the context resolved, but cmux then refused the
-        #     target: the caller's inherited CMUX_WORKSPACE_ID names a different
-        #     workspace than the one hosting the pane we tried to open beside.
-        #     A callee dialing onward hits this.
+        #     target. The opener pins --workspace/--window on every new-surface
+        #     call, so this is no longer the inherited-CMUX_WORKSPACE_ID miss a
+        #     callee dialing onward used to hit (claude-plugins-qyj1); it now
+        #     means the pane or its workspace changed between the opener's tree
+        #     snapshot and the call. Kept as a safety net, not an expected path.
         # Side-by-side needs that context; detached does not (it opens its own
         # new workspace). Rather than fail the whole call, degrade to detached so the
         # dial still completes — the callee just lands in its own tab instead of a
