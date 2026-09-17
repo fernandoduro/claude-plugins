@@ -17,6 +17,7 @@ when_to_use: |
 argument-hint: "[--caffeinate] <when> <what to run>"
 allowed-tools:
   - "Bash(date *)"
+  - "Bash(TARGET=*)"
   - "Bash(caffeinate *)"
   - "Monitor"
 ---
@@ -42,8 +43,8 @@ target, or the human walking away.
 Codex: if that token is not substituted, take the when and the payload from the text
 following the skill name in the current request.
 
-This is rung 2 of the `patient-waiting` ladder with the clock as the watched condition.
-That skill owns the ladder and the hard rules; read it and don't restate it here.
+This follows the `patient-waiting` ladder with the clock as the watched condition. That
+skill owns the ladder and the hard rules; read it before arming anything.
 
 ## Three tempting wrong answers
 
@@ -82,21 +83,14 @@ than pasting it on their behalf.
 
 ## Mechanism (Claude Code)
 
-A `Monitor` with `persistent: true` running a shell loop that polls the wall clock. The
-harness runs the script shell-side and invokes the model only when a line is emitted:
-zero tokens until it fires. Rung 2 rather than rung 1 (a backgrounded `until` loop)
-because a wait measured in hours outlives a plain background task — those get reaped on
-session handoff, and this one has to be alive at a fixed moment, not eventually.
+A backgrounded Bash task running a shell loop that polls the wall clock. Arm it with
+`run_in_background: true`; the harness invokes the model only when the task emits its
+completion line, so the wait costs zero tokens and has no 30-minute cap.
 
-```
-Monitor({
-  description: "clock hitting 9:05pm to trigger the queued review",
-  persistent: true,
-  timeout_ms: 3600000,
-  command: `TARGET=$(date -j -f "%Y-%m-%d %H:%M:%S" "2026-09-09 21:05:00" +%s)
+```bash
+TARGET=$(date -j -f "%Y-%m-%d %H:%M:%S" "2026-09-09 21:05:00" +%s)
 while [ "$(date +%s)" -lt "$TARGET" ]; do sleep 30; done
-echo "FIRE at $(date '+%-I:%M%p') — run /review-pr on https://github.com/OWNER/REPO/pull/701 now"`
-})
+echo "FIRE at $(date '+%-I:%M%p') — run /review-pr on https://github.com/OWNER/REPO/pull/701 now"
 ```
 
 Five things there are deliberate:
@@ -119,9 +113,11 @@ Five things there are deliberate:
    the skill or command and the full target (URL, path, ticket id). The notification
    arrives bare, with none of this reasoning attached, so anything the payload needs
    has to be inside the line.
-5. **Pass the max `timeout_ms` (3600000) anyway.** `persistent: true` makes it moot
-   today, and that is the point: if `persistent` is ever dropped, a one-hour cap fails
-   loudly instead of a five-minute default firing silently early.
+5. **Do not replace it with a long-lived `Monitor`.** Claude Code 2.1.272 accepts
+   `persistent: true` but does not honor it: the task still has a 30-minute cap. A
+   successful tool call therefore does not prove persistence. If the background task is
+   reaped and 30 minutes or less remain, a `Monitor` can cover the remainder; otherwise
+   say that no reliable in-session watcher remains and ask the human to nudge you.
 
 ## Parsing `<when>`
 
@@ -140,7 +136,7 @@ date -v+20M +%s
 ```
 
 These calls are a check, not a value to paste. The epoch gets computed *inside* the
-`Monitor` command, the way the Mechanism block does it: the inline `date -j -f`
+background task, the way the Mechanism block does it: the inline `date -j -f`
 expression re-derives the local offset at arm time, so a re-arm — or a copy of the
 command into another session — can't fire against a stale number.
 
@@ -155,7 +151,7 @@ the human wants overnight, that is the moment to tell them this can't guarantee 
 Nothing here wakes a sleeping Mac. By default, arm only the watcher and explain that a
 sleeping machine delays the fire until it wakes. Hold the machine awake only when the
 invocation includes the standalone `--caffeinate` flag. When present, remove the flag
-from the time/payload input, arm the `Monitor` first, then run this as a **separate
+from the time/payload input, arm the watcher first, then run this as a **separate
 backgrounded `Bash` call**:
 
 ```bash
@@ -166,7 +162,7 @@ caffeinate -ims -t 12000
 outlives the fire and the payload's first minutes. `-i` blocks idle sleep, `-m` keeps the
 disk from idle-sleeping, `-s` holds the system awake while on AC power.
 
-Keep `caffeinate` out of the `Monitor` command string. Nesting the watcher inside
+Keep `caffeinate` out of the watcher command string. Nesting the watcher inside
 `caffeinate … sh -c '…'` puts the fire line in two layers of single quotes, and payloads
 carry apostrophes and quoted glob args — that is the most likely way this watcher gets
 armed broken, and it fails at fire time, hours later, silently.
@@ -176,10 +172,9 @@ regardless of any assertion held. Say that when you arm it — the lid has to st
 
 ## Say this when you arm it
 
-- **A `Monitor` dies with the session.** It survives longer than plain background tasks
-  — background-bash reaping is what rung 2 exists to beat — but if the session is gone
-  at fire time, nothing fires and there is no fallback and no catch-up.
-- **The Monitor task ID**, so the human can cancel with `TaskStop`. It exists only once
+- **The background task dies with the session and may be reaped on handoff.** If it is
+  gone at fire time, nothing fires and there is no fallback or catch-up.
+- **The background task ID**, so the human can cancel with `TaskStop`. It exists only once
   the call returns, so it goes in the message *after* arming — relay it there; never
   invent one, and never drop it because the arming message came first.
 - **The exact target time and the exact payload**, in the words the notification will
@@ -197,7 +192,7 @@ worked when you armed the watcher is not automatically the name that works now.
 
 ## Queueing several
 
-Up to about three: one `Monitor` each. Each exits after its own fire and each
+Up to about three: one background task each. Each exits after its own fire and each
 notification is unambiguous. Simplest thing that works.
 
 More than that: one watcher holding a tab-separated `epoch<TAB>payload` schedule table,
@@ -230,7 +225,7 @@ the reset time. The work in flight is a multi-step review that is not finished.
    watcher goes up while quota remains, and only the leftover margin goes to finishing
    the step in flight. If the step won't fit in that margin, stop mid-step and say which
    step and how far in; the fire line carries the resumption point either way.
-2. Resolve the reset time and arm one `Monitor` whose emitted line names the resumption
+2. Resolve the reset time and arm one background task whose emitted line names the resumption
    point, not just "continue":
    `FIRE — quota refilled, resume the review of https://github.com/OWNER/REPO/pull/701 at the security pass (step 3 of 5) now`.
    Back it with a `caffeinate` window only if the invocation includes `--caffeinate`.
@@ -241,14 +236,10 @@ the reset time. The work in flight is a multi-step review that is not finished.
    session and its context is still loaded. A resume note is for a pause that ends in a
    *fresh* session, which is what a context-window pause needs and this is not.
 
-The watcher survives the rate limit itself, verified on 2026-09-10: a session that hit
-100% quota and was HTTP 429'd at 11:33 kept both its `Monitor`s running, and the clock
-watcher fired at 15:05 against a 15:00 reset and woke that same session, which ran its
-payload and sent the email it was queued for — tested on macOS with the lid open and
-`caffeinate` running. Events that arrive while the session is rate-limited are queued,
-not dropped: two user messages at 11:35 and 11:37 and a second `Monitor`'s events at
-11:36 each tried to start a turn, took a 429, and were all delivered together in the
-first successful turn at 15:05 alongside the `until` fire.
+The harness can queue task-completion events while the session is rate-limited, but the
+watcher itself is only as durable as its background task. Do not turn the 2026-09-10
+rate-limit smoke of `Monitor` delivery into a persistence claim: later testing on
+Claude Code 2.1.272 showed that `persistent: true` was accepted but ignored.
 
 ## Worked example — a queue of PR reviews
 
@@ -256,7 +247,7 @@ The human hands over three PRs and the times they want them reviewed, and wants 
 reviews run here so they can watch and steer before anything is published.
 
 1. Resolve each target time; confirm the review command's name for this cwd.
-2. Arm one `Monitor` per PR (three is inside the one-per-job range), each emitting
+2. Arm one background task per PR (three is inside the one-per-job range), each emitting
    `FIRE — run /review-pr on <full URL> now`.
 3. Report the three task IDs the calls returned, the three fire times, and the fact that
    all three die with the session.

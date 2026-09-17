@@ -29,7 +29,7 @@ It binds to whatever is installed: `hotline` to dispatch into another workspace 
 
 ### `patient-waiting`
 
-A waiting ladder you never skip down: a background bash `until` loop first, the `Monitor` tool with `persistent: true` when background tasks keep getting reaped, and if both keep dying, **stop and hand the loop to the human** rather than falling through to model-in-the-loop polling. The rule underneath it all: never machine-poll a human. If the event is human-triggered — a review submitted, a doc approved, "when I'm ready" — they can close the loop by speaking, and a scheduled model wake adds cost and nothing else.
+A waiting ladder you never skip down: a background bash `until` loop first, the `Monitor` tool second but only inside the deadline it reports back — Claude Code 2.1.272 accepts `persistent: true` and still caps the task at 30 minutes, so accepted is not honored — and if both keep dying, **stop and hand the loop to the human** rather than falling through to model-in-the-loop polling. The rule underneath it all: never machine-poll a human. If the event is human-triggered — a review submitted, a doc approved, "when I'm ready" — they can close the loop by speaking, and a scheduled model wake adds cost and nothing else.
 
 `ScheduleWakeup` loops are reserved for machine-paced state neither watcher can see, and even then come with three backstops: max three quiet iterations, no off-hours polling, and a quiet-poll count in every reschedule reason so drift stays visible. The skill exists because a killed watcher once got "recovered" into an hourly self-reschedule that ran for a week — roughly 140 full-context premium-model turns spent confirming nothing had changed.
 

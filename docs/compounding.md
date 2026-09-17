@@ -249,10 +249,10 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   cmux ancestry, so a `launchd`/`cron`/`at` job or a cloud routine fires but cannot
   drive cmux — the launchctl-into-cmux attempt died exactly here. Schedule the
   delivery from the agent's own in-session wait so the send runs from a descendant of
-  cmux; the `until` skill (`delayed-work`) owns that wait — a persistent `Monitor`
-  polling the clock on Claude, a blocking `functions.wait` exec cell on Codex — and a
-  plain backgrounded loop is rung 1, reaped on session handoff.
-  (claude-plugins-o4us, 0005347)
+  cmux; the `until` skill (`delayed-work`) owns that wait — background Bash on Claude,
+  a blocking `functions.wait` exec cell on Codex. Do not mistake an accepted persistence
+  option for a guarantee: Claude Code 2.1.272 accepts `persistent: true` while retaining
+  a 30-minute `Monitor` cap. (claude-plugins-o4us, claude-plugins-33ct, 0005347)
 - **A wall-clock wait polls the clock; one long `sleep` fires late by however long the
   machine slept.** `sleep 11280` does not advance while the lid is shut, and it is the
   form an agent reaches for first — a baseline agent asked to fire at 9:05pm proposed

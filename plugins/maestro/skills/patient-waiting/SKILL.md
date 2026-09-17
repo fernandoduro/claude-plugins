@@ -25,11 +25,12 @@ had changed. Every rule below exists because of that.
    ```bash
    until <condition-check>; do sleep 3; done; echo "signal"; <print state>
    ```
-2. **`Monitor` tool, `persistent: true`.** The harness runs your poll script
-   shell-side and invokes the model ONLY when a line is emitted. Zero tokens
-   idle, survives longer than plain background tasks. Use when background
-   bashes keep getting reaped (session handoffs kill them). Cover failure
-   states too — emit on the watched thing dying, not just succeeding.
+2. **`Monitor` tool, only inside its reported deadline.** The harness runs your
+   poll script shell-side and invokes the model ONLY when a line is emitted. Zero
+   tokens idle, but Claude Code 2.1.272 still applies a 30-minute cap when it accepts
+   `persistent: true`; accepted is not the same as honored. Use it only when the event
+   fits inside the returned deadline. Cover failure states too — emit on the watched
+   thing dying, not just succeeding.
 3. **Both keep dying → STOP and hand the loop to the human.** One line:
    "the watcher can't survive in this environment — when you've done X,
    nudge me." Do NOT fall through to model-in-the-loop polling.
@@ -63,8 +64,8 @@ had changed. Every rule below exists because of that.
 | Waiting on | Mechanism |
 |---|---|
 | Local file/status flag to flip once | Background bash `until` loop |
-| Wall-clock time / "run X at 9pm" | The `until` skill (`delayed-work` plugin) — this ladder's rung 2 with the clock as the condition |
-| Recurring events (log errors, PR comments) | `Monitor` (persistent) |
+| Wall-clock time / "run X at 9pm" | The `until` skill (`delayed-work` plugin) — background Bash first; `Monitor` only within its reported deadline |
+| Recurring events (log errors, PR comments) | `Monitor` only when its reported deadline covers the watch; otherwise stop |
 | Human action (submit, approve, "when I'm ready") | Watcher from above — or just tell them to nudge you. Never scheduled wakes. |
 | CI/deploy the harness can't see | `ScheduleWakeup`, interval matched to the job, max 3 quiet polls |
 | Watcher keeps getting killed | Stop. Ask. Don't escalate. |

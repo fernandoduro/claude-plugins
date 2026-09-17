@@ -31,8 +31,11 @@ test('until preserves cross-harness contracts and its deliberate mechanics', () 
 
 	// A single long sleep is the bug this skill exists to prevent; the loop must stay.
 	assert.match(content, /while \[ "\$\(date \+%s\)" -lt "\$TARGET" \]; do sleep 30; done/);
-	assert.match(content, /persistent: true/);
-	assert.match(content, /timeout_ms: 3600000/);
+	assert.match(content, /run_in_background/);
+	assert.match(content, /30-minute cap/);
+	assert.match(content, /`persistent: true` but does not honor it/);
+	assert.doesNotMatch(content, /`persistent` makes it moot/);
+	assert.doesNotMatch(content, /Monitor\(\{[\s\S]*?persistent: true[\s\S]*?\}\)/);
 	assert.match(content, /date -j -f/);
 	// The notification arrives bare, so the emitted line has to name the payload.
 	assert.match(content, /FIRE/);

@@ -23,7 +23,7 @@ reset — `until 9pm quota refilled, resume the review of PR 701 at the security
 The alternatives are babysitting the clock to type "continue", or letting the agent poll
 "is it time yet?" with the quota that's left.
 
-It arms a `Monitor` running a wall-clock poll loop, so nothing is spent until the target
+It arms a background task running a wall-clock poll loop, so nothing is spent until the target
 time arrives; the notification wakes **this** session — context still loaded, so no
 resume note is needed — and it runs the payload itself.
 
@@ -45,14 +45,13 @@ up rather than nothing.
   passes during system sleep fires on wake instead of on time. Add the opt-in
   `--caffeinate` invocation flag to hold the machine awake for the life of the watcher.
   It stops idle sleep but cannot beat a closed lid — leave the lid open.
-- It does survive the rate limit itself: a session that was HTTP 429'd kept its watchers
-  running, and the fire at the reset time woke that same session. Events that arrive
-  while the session is rate-limited are queued rather than dropped, and land together in
-  the first successful turn.
-- Zero-token waiting is Claude-Code-specific (`Monitor`). Codex's only in-session wait
+- Background tasks can be reaped on session handoff. `Monitor` is only a fallback when
+  30 minutes or less remain; its accepted `persistent: true` field does not remove that
+  cap in Claude Code 2.1.272.
+- Zero-token waiting is Claude-Code-specific. Codex's only in-session wait
   blocks the turn, so it is honest there only for short horizons.
 
-**Related:** rung 2 of the `patient-waiting` ladder (in the `maestro` plugin) with the
+**Related:** the `patient-waiting` ladder (in the `maestro` plugin) with the
 clock as the watched condition. For timed delivery of a prompt *into another cmux
 surface*, use the `send-at` skill instead — `until` targets the current session and
 needs no cmux.
