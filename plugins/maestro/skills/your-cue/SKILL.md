@@ -226,6 +226,13 @@ highest-priority non-nothing cue, carrying its visible locator so the human
 knows where to go. `Next for you: nothing` when every workstream is working or
 settled; say it rather than trailing off.
 
+**A cue to answer or clarify carries its subject.** A briefing is read hours
+after the question was asked, so the answer tokens alone (`answer "fold" or
+"defer"`) name nothing the human can act on. Add a clause naming what the
+decision is about, and where the orchestrator kept a decisions ledger
+(`/tmp/maestro/decisions-<session-id>.md`, written by the sibling `conduct`
+skill), the section link — found by reading the ledger, never invented.
+
 ### Burial cues
 
 `Your cue: bury this session` requires both halves: the transcript shows the
@@ -256,3 +263,4 @@ to a later explicit request, and never runs `graveyard bury` itself.
 | Nesting every registry row | Only callees present in the live inventory |
 | Burying, focusing, or notifying anything | Read-only; burial is a cue |
 | Ending with a menu | One `Next for you:` |
+| An `answer`/`clarify` cue that is only answer tokens | Add the subject clause, and the ledger link when one exists |
