@@ -69,14 +69,14 @@ cmux accepts three handle formats anywhere a `window`, `workspace`, `pane`, or `
 `tab-action` additionally accepts `tab:<n>` (also positional).
 
 **Get UUIDs like this:**
-- Your own location: the `CMUX_*_ID` env vars are already UUIDs (`CMUX_SURFACE_ID`, `CMUX_WORKSPACE_ID`, `CMUX_TAB_ID`), and `cmux identify --json` returns your caller/focused UUIDs.
+- Your own location: `cmux identify --json` returns your caller/focused UUIDs. The `CMUX_*_ID` env vars (`CMUX_SURFACE_ID`, `CMUX_WORKSPACE_ID`, `CMUX_TAB_ID`) are UUIDs too, but they are a **snapshot from the moment your process was spawned** — a surface that has since been moved, re-registered, or superseded leaves them naming something cmux no longer knows, and an agent-spawned surface (a dialed-in callee) is the common case. `identify` can also answer `"caller": null` for exactly that reason, and then it reports the **focused** context, which is somebody else's surface. So confirm the id you intend to act on appears in `cmux tree --all --json --id-format uuids` before you target it, and treat "not in the tree" as unknown location rather than as a usable handle.
 - Anything else: `cmux tree --all --json --id-format uuids` (or `--id-format both` to see refs alongside for a human). Snapshot once, read the UUIDs you need, then target by those.
 
 ### Destructive and bulk operations: resolve UUIDs up front
 
 For anything that mutates or removes state — `close-surface`, `close-workspace`, `close-window`, `swap-pane`, `move-surface`, or any loop over several targets — **collect every target UUID in one `tree --json --id-format uuids` snapshot first, then act by UUID.** This is the affirmative rule that keeps bulk operations correct:
 
-1. `cmux identify --json` → note your **own** surface/pane UUID, so you can keep it out of the target set (closing the surface your agent runs in kills the agent's tty — the process goes down with the pane).
+1. `cmux identify --json` → note your **own** surface/pane UUID, so you can keep it out of the target set (closing the surface your agent runs in kills the agent's tty — the process goes down with the pane). Confirm that id is in the tree snapshot from step 2: an id that isn't there excludes nothing, so the loop would be free to close your own pane. When your own location cannot be confirmed, do not run the bulk operation — name the targets one at a time instead.
 2. `cmux tree --all --json --id-format uuids` → collect the target UUIDs.
 3. Exclude your own UUID from step 1.
 4. Act on each **by UUID**.
