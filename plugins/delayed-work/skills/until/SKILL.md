@@ -93,7 +93,7 @@ while [ "$(date +%s)" -lt "$TARGET" ]; do sleep 30; done
 echo "FIRE at $(date '+%-I:%M%p') — run /review-pr on https://github.com/OWNER/REPO/pull/701 now"
 ```
 
-Five things there are deliberate:
+Six things there are deliberate:
 
 1. **Epoch comparison in a loop, not one long `sleep`.** While the machine is asleep the
    whole shell loop is frozen, exactly as a single `sleep` is — no form of this wakes a
@@ -113,7 +113,13 @@ Five things there are deliberate:
    the skill or command and the full target (URL, path, ticket id). The notification
    arrives bare, with none of this reasoning attached, so anything the payload needs
    has to be inside the line.
-5. **Do not replace it with a long-lived `Monitor`.** Claude Code 2.1.272 accepts
+5. **The task emits; it does not do the work.** A payload that is pure shell is
+   tempting to run inside the loop — and then the fire is silent: no model turn
+   happens, no session learns it fired, and nobody can report it or recover if
+   it didn't. Put the work in the emitted line and let the woken session do it.
+   Doing it in the task is defensible only when a human reads the artifact
+   directly and no one needs to be told; say so when you arm it that way.
+6. **Do not replace it with a long-lived `Monitor`.** Claude Code 2.1.272 accepts
    `persistent: true` but does not honor it: the task still has a 30-minute cap. A
    successful tool call therefore does not prove persistence. If the background task is
    reaped and 30 minutes or less remain, a `Monitor` can cover the remainder; otherwise
