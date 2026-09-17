@@ -1,0 +1,110 @@
+# The decisions ledger
+
+A long orchestration asks the human a lot of binary questions. Each one is clear
+in the message that asks it and meaningless a few hours later, because every
+later reference is to the *answer tokens* — "fold" / "defer", "now" / "after
+81", "3" / "keep 2" — and those carry no subject. The ledger is where the
+subject lives, so `Next for you:` stays actionable without scrollback.
+
+## Path
+
+```
+/tmp/maestro/decisions-<session-id>.md
+```
+
+One file per orchestrating session. `<session-id>` is this session's id (the
+`caller-id` skill in the `hotline` plugin prints it); its first segment is
+enough, and that is what the human can retype. No session id available →
+`/tmp/maestro/decisions-<YYYY-MM-DD>-<short-slug>.md`.
+
+`/tmp` on purpose: guessable, `code -r`-able, survives the session, and the
+human can find it by `ls /tmp/maestro/` without asking. The harness scratchpad
+is not a substitute — its path is unguessable, which defeats the point. `/tmp`
+is world-readable and cleared on reboot, so the ledger is working context, not
+storage: nothing secret, nothing you'd mind losing once the work lands.
+
+## Shape
+
+```markdown
+# Decisions in play — <what this session is doing>
+
+Plain-language context for every question the orchestrator has asked <human>.
+One section per decision. Resolved ones move to the bottom with the answer.
+
+## Open
+
+### decide-<slug> — <the question as a question>
+
+**What happened:** the facts that produced the question, in words. Spell out
+what an id refers to ("PR #92 fixes a bug where …"), never just the number.
+
+**Why it matters:** the cost of getting it wrong, or of deciding later.
+
+**Options:**
+- "<exact token to type>" — what it does, what it costs, how long it takes.
+- "<exact token to type>" — same.
+
+**Recommendation:** one option, one sentence of why.
+
+**What happens next either way:** what you do with the answer, so the human
+knows what they're starting.
+
+## Decided
+
+- <YYYY-MM-DD> — <subject>: **<answer>**. (<one clause of why, if it wasn't the
+  recommendation or if the reasoning binds future work>)
+```
+
+Write it for a sharp reader who has never seen this repo: no jargon, no bare
+issue numbers, no internal shorthand. If a sentence only parses for someone who
+watched the session, rewrite it.
+
+## Rules
+
+- **Write the section before the message that asks the question.** Never after,
+  and never "when it comes up again" — the gap between asking and writing is
+  exactly where the context is lost. It also means the asking message can link
+  a section that already exists.
+- **`decide-<slug>` names the subject**, not a counter: `decide-92-campaigns`,
+  `decide-exit-code`. The anchor's real job is being a search token — `code -r`
+  opens the file but does not jump to an anchor — so it has to be greppable and
+  memorable. Keep `## Open` above `## Decided` so opening the file lands on
+  live questions.
+- **Options are the literal strings you'll accept as an answer.** The human
+  should be able to reply with one token and nothing else.
+- **Resolve in the same turn you act on the answer:** move the section to
+  `Decided` with the date and what was chosen. A ledger whose `Open` list is
+  stale is worse than none, because it re-asks settled questions.
+- **One file, appended all session.** Don't start a second ledger for a second
+  decision, and don't rewrite history in `Decided`.
+
+## `Next for you:` lines
+
+Three parts, always: the answer tokens, a plain clause naming the subject, and
+the ledger link.
+
+Bad — tokens with no subject, nothing to open:
+
+```
+Next for you: still owe "fold campaigns into 92" or "defer campaigns"
+```
+
+Good:
+
+```
+Next for you: answer "fold campaigns into 92" or "defer campaigns" — whether PR #92
+also fixes the wrong exit code in the five campaigns commands
+(/tmp/maestro/decisions-c54f524f.md#decide-92-campaigns)
+```
+
+The clause stays short enough (≈15 words) that a human who was present never
+needs the link, and concrete enough that a human who wasn't can decide from the
+file alone.
+
+## Handoffs
+
+A handoff **points at the ledger path**; it does not restate it. Open decisions
+belong in the handoff's next steps as one line each — tokens, clause, link —
+and the `Decided` list is the decision history a fresh agent needs, already
+written. Copying sections into the handoff forks them, and the copy is the one
+that goes stale.

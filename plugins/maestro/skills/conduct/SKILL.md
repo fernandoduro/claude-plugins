@@ -111,12 +111,31 @@ dependencies in the PR description, not just chat.
 - Report settled facts; hold variable interim state ("A thinks X but B might
   flip it") until it settles. Interim heartbeats are one line.
 - End every message with `Next for you: <the single action>` — or
-  `Next for you: nothing` when the machine is working. Never a menu.
+  `Next for you: nothing` when the machine is working. Never a menu. When the
+  action is a decision, the line carries three parts: the **answer tokens**, a
+  plain clause **naming the subject**, and a **link to the decision's ledger
+  section**. Answer tokens alone are the failure — `still owe "fold" or
+  "defer"` means nothing to a human who left four hours ago.
 - Questions get assessments, directives get execution: "how hard is X?" is
   answered, not fixed; "your call" means decide, state the reasoning briefly,
   and proceed — don't bounce the decision back.
 - Never cut for brevity: what failed (actual output), what was skipped and
   why, what you're unsure of, what surprised you.
+
+### Every decision you ask for gets a ledger section first
+
+Keep `/tmp/maestro/decisions-<session-id>.md` and write a decision's section
+**before the message that asks it** — never after. The human answers hours
+later with no scrollback, so the section carries what happened, why it matters,
+the options as the exact tokens to type, your recommendation, and what happens
+next either way, in plain language for someone who has never seen the repo.
+Resolved decisions move to a `Decided` list with the date and the answer: that
+list is the audit trail, and it's the decisions half of a handoff, which
+**points at the ledger** instead of restating it.
+
+**Read `${CLAUDE_SKILL_DIR}/references/decisions-ledger.md`** for the section
+template, the naming and resolution rules, and worked `Next for you:` lines.
+(Codex: substitute the directory containing this `SKILL.md`.)
 
 ## Anti-patterns
 
@@ -128,3 +147,5 @@ dependencies in the PR description, not just chat.
 | Re-dispatching to a slow or "interrupted" agent | Re-run the waiter; read the transcript |
 | Relaying a report unverified | Check the diff/PR/CI yourself first |
 | Ending with a menu of options | One `Next for you:` action (or "nothing") |
+| `Next for you:` carrying only the answer tokens | Tokens + subject clause + ledger link |
+| Asking a decision, then writing it down later | Ledger section first, then the message |
