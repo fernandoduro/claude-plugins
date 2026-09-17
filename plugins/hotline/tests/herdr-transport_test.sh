@@ -3066,8 +3066,14 @@ check "…and it does not leak into the emitted JSON" $? "out=$out"
 # And when the check period has lapsed, the BatchMode hop blocks on an
 # authentication it cannot perform. Bounded, that is an error naming the URL; the
 # alternative is a silent half-hour in the middle of a work order.
+# The margin is sized for the slowest scheduling, not the fastest: the stub prints
+# the notice before it stalls, but it is a separate process, and a 1s budget can
+# expire before its first write is even scheduled when the suite runs several jobs
+# wide. That reads as "the error lost the URL" — a false red, reproduced at 2 of 4
+# concurrent runs. Keep sleep >> timeout so the kill still happens, and keep the
+# timeout clear of scheduling jitter.
 t=$(remote_env)
-out=$(rcheck "$t" "SSH_STUB_SLEEP=3" "SSH_STUB_TAILSCALE=1" "HOTLINE_REMOTE_SSH_TIMEOUT=1" \
+out=$(rcheck "$t" "SSH_STUB_SLEEP=10" "SSH_STUB_TAILSCALE=1" "HOTLINE_REMOTE_SSH_TIMEOUT=3" \
         -- "$CHECK_HERDR"); rc=$?
 [[ $rc -ne 0 && "$(jq -r '.reason' <<<"$out" 2>/dev/null)" == *"timed out"* ]] \
   && [[ "$(jq -r '.reason' <<<"$out" 2>/dev/null)" == *"login.tailscale.com/a/f00dcafe"* ]]
