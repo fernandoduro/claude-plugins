@@ -113,9 +113,10 @@ dependencies in the PR description, not just chat.
 - End every message with `Next for you: <the single action>` — or
   `Next for you: nothing` when the machine is working. Never a menu. When the
   action is a decision, the line carries three parts: the **answer tokens**, a
-  plain clause **naming the subject**, and a **link to the decision's ledger
-  section**. Answer tokens alone are the failure — `still owe "fold" or
-  "defer"` means nothing to a human who left four hours ago.
+  plain clause **naming the subject**, and the **ledger path plus its anchor as
+  a separate token** (`… .md - #decide-92`) — a path fused to an anchor opens
+  nothing. Answer tokens alone are the failure — `still owe "fold" or "defer"`
+  means nothing to a human who left four hours ago.
 - Questions get assessments, directives get execution: "how hard is X?" is
   answered, not fixed; "your call" means decide, state the reasoning briefly,
   and proceed — don't bounce the decision back.
@@ -147,5 +148,5 @@ template, the naming and resolution rules, and worked `Next for you:` lines.
 | Re-dispatching to a slow or "interrupted" agent | Re-run the waiter; read the transcript |
 | Relaying a report unverified | Check the diff/PR/CI yourself first |
 | Ending with a menu of options | One `Next for you:` action (or "nothing") |
-| `Next for you:` carrying only the answer tokens | Tokens + subject clause + ledger link |
+| `Next for you:` carrying only the answer tokens | Tokens + subject clause + ledger path, anchor separate |
 | Asking a decision, then writing it down later | Ledger section first, then the message |

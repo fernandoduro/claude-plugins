@@ -66,10 +66,13 @@ watched the session, rewrite it.
   exactly where the context is lost. It also means the asking message can link
   a section that already exists.
 - **`decide-<slug>` names the subject**, not a counter: `decide-92-campaigns`,
-  `decide-exit-code`. The anchor's real job is being a search token — `code -r`
-  opens the file but does not jump to an anchor — so it has to be greppable and
-  memorable. Keep `## Open` above `## Decided` so opening the file lands on
-  live questions.
+  `decide-exit-code`. The anchor is a search token, never part of the path:
+  `code /tmp/maestro/decisions-abc.md#decide-90` treats the whole string as a
+  filename and offers to **create a new file**. So the path and the anchor are
+  written as two things with a separator between them, the path stays a clean
+  token the human can click or paste, and the anchor has to be greppable.
+  Keep `## Open` above `## Decided` so opening the file lands on live
+  questions.
 - **Options are the literal strings you'll accept as an answer.** The human
   should be able to reply with one token and nothing else.
 - **Resolve in the same turn you act on the answer:** move the section to
@@ -81,12 +84,14 @@ watched the session, rewrite it.
 ## `Next for you:` lines
 
 Three parts, always: the answer tokens, a plain clause naming the subject, and
-the ledger link.
+the ledger path followed by the anchor as a separate token.
 
-Bad — tokens with no subject, nothing to open:
+Bad — tokens with no subject, and a path fused to its anchor, which opens
+nothing:
 
 ```
 Next for you: still owe "fold campaigns into 92" or "defer campaigns"
+(/tmp/maestro/decisions-c54f524f.md#decide-92-campaigns)
 ```
 
 Good:
@@ -94,7 +99,7 @@ Good:
 ```
 Next for you: answer "fold campaigns into 92" or "defer campaigns" — whether PR #92
 also fixes the wrong exit code in the five campaigns commands
-(/tmp/maestro/decisions-c54f524f.md#decide-92-campaigns)
+(/tmp/maestro/decisions-c54f524f.md - #decide-92-campaigns)
 ```
 
 The clause stays short enough (≈15 words) that a human who was present never

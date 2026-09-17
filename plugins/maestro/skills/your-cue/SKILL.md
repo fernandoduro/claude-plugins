@@ -231,7 +231,9 @@ after the question was asked, so the answer tokens alone (`answer "fold" or
 "defer"`) name nothing the human can act on. Add a clause naming what the
 decision is about, and where the orchestrator kept a decisions ledger
 (`/tmp/maestro/decisions-<session-id>.md`, written by the sibling `conduct`
-skill), the section link — found by reading the ledger, never invented.
+skill), its path followed by the anchor as a separate token
+(`… .md - #decide-92`), because a path fused to an anchor opens nothing — both
+found by reading the ledger, never invented.
 
 ### Burial cues
 
@@ -263,4 +265,4 @@ to a later explicit request, and never runs `graveyard bury` itself.
 | Nesting every registry row | Only callees present in the live inventory |
 | Burying, focusing, or notifying anything | Read-only; burial is a cue |
 | Ending with a menu | One `Next for you:` |
-| An `answer`/`clarify` cue that is only answer tokens | Add the subject clause, and the ledger link when one exists |
+| An `answer`/`clarify` cue that is only answer tokens | Add the subject clause, and the ledger path plus separate anchor when one exists |
