@@ -7,8 +7,8 @@
 #
 # Usage:
 #   session-cache.sh get <target-path> --caller-session <id>
-#   session-cache.sh set <target-path> --caller-session <id> --session <id> --mode <mode> [--surface <ref>] [--call-id <id>] [--transport <name>] [--remote <ssh-target>]
-#   session-cache.sh update <target-path> --caller-session <id> [--session <id>] [--surface <ref> | --clear-surface] [--call-id <id>] [--transport <name>] [--remote <ssh-target>]
+#   session-cache.sh set <target-path> --caller-session <id> --session <id> --mode <mode> [--surface <ref>] [--call-id <id>] [--call-dir <path>] [--transport <name>] [--remote <ssh-target>]
+#   session-cache.sh update <target-path> --caller-session <id> [--session <id>] [--surface <ref> | --clear-surface] [--call-id <id>] [--call-dir <path>] [--transport <name>] [--remote <ssh-target>]
 #   session-cache.sh forget <target-path> --caller-session <id>
 #   session-cache.sh list --caller-session <id>
 #
@@ -45,6 +45,16 @@
 # it hosted, which distinguishes "the pane hotline used" from "a pane the user
 # has since repurposed".
 #
+# --call-dir records that exchange's call dir as last_call_dir, which is the only
+# way a LATER dial can ask what the PREVIOUS one is still doing. It matters for one
+# state: a detached callee's tab auto-closes the moment its own response wait
+# finishes, so a follow-up pasted into that tab while the wait is still running is
+# enqueued behind the live turn and then destroyed with the tab — the message is
+# lost and the follow-up's own waiter polls a dead surface to its budget. The call
+# dir answers it directly: `done` in there means that wait has finished
+# (claude-plugins-zaus). Optional, and absent on every entry written before it
+# existed, which reads as "nothing known about the prior exchange".
+#
 # --transport / --remote say WHICH BACKEND, AND WHICH BOX, the cached host handle
 # belongs to — written as `transport` and `remote`, both OPTIONAL and both ABSENT on
 # a local cmux entry, which is what every entry written before hotline 0.31.0 is.
@@ -66,8 +76,8 @@ set -euo pipefail
 
 if [[ "${1:-}" == "--help" ]]; then
   echo "Usage: session-cache.sh get <target-path> --caller-session <id>"
-  echo "       session-cache.sh set <target-path> --caller-session <id> --session <id> --mode <mode> [--surface <ref>] [--call-id <id>] [--transport <name>] [--remote <ssh-target>]"
-  echo "       session-cache.sh update <target-path> --caller-session <id> [--session <id>] [--surface <ref> | --clear-surface] [--call-id <id>] [--transport <name>] [--remote <ssh-target>]"
+  echo "       session-cache.sh set <target-path> --caller-session <id> --session <id> --mode <mode> [--surface <ref>] [--call-id <id>] [--call-dir <path>] [--transport <name>] [--remote <ssh-target>]"
+  echo "       session-cache.sh update <target-path> --caller-session <id> [--session <id>] [--surface <ref> | --clear-surface] [--call-id <id>] [--call-dir <path>] [--transport <name>] [--remote <ssh-target>]"
   echo "       session-cache.sh forget <target-path> --caller-session <id>"
   echo "       session-cache.sh list --caller-session <id>"
   echo ""
@@ -88,6 +98,7 @@ SESSION_ID=""
 MODE=""
 SURFACE_REF=""
 CALL_ID=""
+CALL_DIR_REF=""
 CLEAR_SURFACE=false
 TRANSPORT=""
 REMOTE=""
@@ -99,6 +110,7 @@ while [[ $# -gt 0 ]]; do
     --mode) MODE="$2"; shift 2 ;;
     --surface) SURFACE_REF="$2"; shift 2 ;;
     --call-id) CALL_ID="$2"; shift 2 ;;
+    --call-dir) CALL_DIR_REF="$2"; shift 2 ;;
     --transport) TRANSPORT="$2"; shift 2 ;;
     --remote) REMOTE="$2"; shift 2 ;;
     --clear-surface) CLEAR_SURFACE=true; shift ;;
@@ -151,20 +163,24 @@ case "$CMD" in
     # cleanly signals "no reusable surface" for headless/detached calls.
     if [[ -f "$CACHE_FILE" ]]; then
       jq --arg t "$TARGET" --arg s "$SESSION_ID" --arg m "$MODE" --arg sf "$SURFACE_REF" \
-         --arg ci "$CALL_ID" --arg tr "$TRANSPORT" --arg rm "$REMOTE" --argjson now "$NOW" \
+         --arg ci "$CALL_ID" --arg cd "$CALL_DIR_REF" --arg tr "$TRANSPORT" --arg rm "$REMOTE" \
+         --argjson now "$NOW" \
         '.connections[$t] = ({session_id: $s, started: $now, last_contact: $now, mode: $m, exchange_count: 1}
            + (if $sf == "" then {} else {surface_ref: $sf} end)
            + (if $ci == "" then {} else {last_call_id: $ci} end)
+           + (if $cd == "" then {} else {last_call_dir: $cd} end)
            + (if $tr == "" then {} else {transport: $tr} end)
            + (if $rm == "" then {} else {remote: $rm} end))' \
         "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
     else
       jq -n --arg caller "$CALLER_CWD" --arg cs "$CALLER_SESSION" \
         --arg t "$TARGET" --arg s "$SESSION_ID" --arg m "$MODE" --arg sf "$SURFACE_REF" \
-        --arg ci "$CALL_ID" --arg tr "$TRANSPORT" --arg rm "$REMOTE" --argjson now "$NOW" \
+        --arg ci "$CALL_ID" --arg cd "$CALL_DIR_REF" --arg tr "$TRANSPORT" --arg rm "$REMOTE" \
+        --argjson now "$NOW" \
         '{caller: $caller, caller_session_id: $cs, connections: {($t): ({session_id: $s, started: $now, last_contact: $now, mode: $m, exchange_count: 1}
            + (if $sf == "" then {} else {surface_ref: $sf} end)
            + (if $ci == "" then {} else {last_call_id: $ci} end)
+           + (if $cd == "" then {} else {last_call_dir: $cd} end)
            + (if $tr == "" then {} else {transport: $tr} end)
            + (if $rm == "" then {} else {remote: $rm} end))}}' \
         > "$CACHE_FILE"
@@ -185,11 +201,12 @@ case "$CMD" in
     # describe the host handle, so an entry that no longer has one must not keep
     # claiming which backend and which box that handle was on.
     jq --arg t "$TARGET" --arg sf "$SURFACE_REF" --arg ci "$CALL_ID" --arg sid "$SESSION_ID" \
-       --arg tr "$TRANSPORT" --arg rm "$REMOTE" \
+       --arg cd "$CALL_DIR_REF" --arg tr "$TRANSPORT" --arg rm "$REMOTE" \
        --argjson clear "$($CLEAR_SURFACE && echo true || echo false)" --argjson now "$NOW" \
       '.connections[$t].last_contact = $now
        | .connections[$t].exchange_count += 1
        | (if $ci == "" then . else .connections[$t].last_call_id = $ci end)
+       | (if $cd == "" then . else .connections[$t].last_call_dir = $cd end)
        | (if $sid == "" then . else .connections[$t].session_id = $sid end)
        | (if $tr == "" then . else .connections[$t].transport = $tr end)
        | (if $rm == "" then . else .connections[$t].remote = $rm end)

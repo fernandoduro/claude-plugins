@@ -68,6 +68,14 @@ if [[ -s "$CALL_DIR/call_id.txt" ]]; then
   CALL_ID_ARGS=(--call-id "$(cat "$CALL_DIR/call_id.txt")")
 fi
 
+# THIS call dir, so a LATER dial can ask what this exchange is still doing. One
+# state needs it: a DETACHED callee's tab auto-closes the moment its own response
+# wait finishes, so a follow-up pasted in while that wait is still running is
+# enqueued behind the live turn and then destroyed along with the tab — dropped
+# message, and a second waiter polling a corpse to its full budget. `done` in here
+# is what says the wait has finished (claude-plugins-zaus).
+CALL_DIR_ARGS=(--call-dir "$CALL_DIR")
+
 # WHICH BACKEND, AND WHICH BOX, that handle belongs to. surface_ref is opaque by
 # design, so a cmux surface handle, a local herdr agent name and a REMOTE herdr
 # agent name are indistinguishable strings — and a follow-up that re-addresses the
@@ -89,6 +97,7 @@ bash "$SCRIPT_DIR/session-cache.sh" set "$TARGET" \
   --session "$SESSION_ID" \
   --mode "$MODE" ${SURFACE_ARGS[@]+"${SURFACE_ARGS[@]}"} \
   ${CALL_ID_ARGS[@]+"${CALL_ID_ARGS[@]}"} \
+  ${CALL_DIR_ARGS[@]+"${CALL_DIR_ARGS[@]}"} \
   ${TRANSPORT_ARGS[@]+"${TRANSPORT_ARGS[@]}"} >/dev/null 2>&1 || debug "session-cache.sh set failed"
 
 # Dial history: "who called THIS workspace", keyed by the RECEIVER's cwd.

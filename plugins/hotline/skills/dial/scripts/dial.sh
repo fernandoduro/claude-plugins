@@ -942,6 +942,9 @@ PREV_CALL_ID=""
 # so the new callee has a new id. Step 6 compares the two and heals the cache when
 # they differ; a cmux follow-up resumes the same id, so nothing there changes.
 PREV_SESSION_ID=""
+# The call dir of the exchange before this one, so step 5a can ask whether that
+# exchange is still in flight. See detached_exchange_still_waiting there.
+PREV_CALL_DIR=""
 if [[ -z "$RESUME_ARG" ]]; then
   if CACHED=$(bash "$DIAL_SCRIPTS/session-cache.sh" get "$TARGET_PATH" \
                 --caller-session "$MY_SESSION_ID" 2>/dev/null) && [[ -n "$CACHED" ]]; then
@@ -951,6 +954,7 @@ if [[ -z "$RESUME_ARG" ]]; then
     PREV_SURFACE_REF=$(jq -r '.surface_ref // empty' <<<"$CACHED")
     PREV_CALL_ID=$(jq -r '.last_call_id // empty' <<<"$CACHED")
     PREV_SESSION_ID=$(jq -r '.session_id // empty' <<<"$CACHED")
+    PREV_CALL_DIR=$(jq -r '.last_call_dir // empty' <<<"$CACHED")
     # WHICH BACKEND AND WHICH BOX that host handle belongs to. Absent means what it
     # has always meant — a local callee — because that is the shape of every entry
     # written before these fields existed.
@@ -1174,6 +1178,37 @@ DELIVERY_RETRIED=""
 # first-contact dial, which is how the surface sprawl went unnoticed for so
 # long (claude-plugins-6nbr).
 # ---------------------------------------------------------------------------
+# WOULD THE PREVIOUS EXCHANGE'S OWN WAITER DESTROY THIS ONE'S MESSAGE?
+#
+# For a DETACHED callee, yes, if that wait is still running. The tab auto-closes
+# the instant the prior exchange's response is captured (wait-for-response.sh's
+# cleanup_workspace_and_script, which the detached placement reaches with
+# keep_workspace=false), and cmux-reuse-surface.sh's gates do not see that coming:
+# a mid-turn REPL with an empty input box reads as reusable, so the paste is
+# accepted and ENQUEUED behind the live turn. The callee then finishes the PRIOR
+# turn, emits its STATUS, and the prior waiter closes the workspace — taking the
+# queued message with it. The follow-up's own waiter then polls a dead surface to
+# its full budget and reports a timeout for work that was never read
+# (claude-plugins-zaus).
+#
+# So reuse waits for the prior exchange to be over. `done` in its call dir is the
+# signal that exists, and every terminal path writes it — the captured response, an
+# AWAITING_REVIEW checkpoint, a budget timeout, a preemption. Absent means the wait
+# is live, OR that no waiter has run yet; both refuse, because the refusal costs one
+# extra tab (the behaviour every detached follow-up had until this branch, and one
+# that DID deliver the message) while a wrong reuse costs the message.
+#
+# Side and window placements are unaffected: they are the placements that set
+# keep_workspace=true, so their waiters close nothing and a queued follow-up is
+# delivered when the turn ends. A call dir with no keep_workspace.txt is read the
+# way the waiter reads it — as false.
+detached_exchange_still_waiting() {
+  [[ -n "$PREV_CALL_DIR" && -d "$PREV_CALL_DIR" ]] || return 1
+  [[ "$(call_dir_placement "$PREV_CALL_DIR" 2>/dev/null || true)" == "detached" ]] || return 1
+  [[ "$(cat "$PREV_CALL_DIR/keep_workspace.txt" 2>/dev/null || echo false)" != "true" ]] || return 1
+  [[ ! -f "$PREV_CALL_DIR/done" ]]
+}
+
 if ! $FIRST_CONTACT && [[ "$TRANSPORT" == "cmux" ]]; then
   if [[ -z "$SURFACE_REF" ]]; then
     # A headless first contact leaves no surface to reuse, and a prior follow-up
@@ -1182,6 +1217,9 @@ if ! $FIRST_CONTACT && [[ "$TRANSPORT" == "cmux" ]]; then
     # now records the surface inside its workspace, so it reaches the reuse attempt
     # below (claude-plugins-zaus).
     add_fallback "surface-reuse-skipped(no-cached-surface)"
+  elif detached_exchange_still_waiting; then
+    add_fallback "surface-reuse→fresh(detached-mid-turn: prior exchange still waiting)"
+    SURFACE_REF=""
   else
     # Always the file, never --prompt: a work order handed over on argv is
     # readable by any local user through `ps`, and the reuse path used to take
@@ -1213,9 +1251,13 @@ if ! $FIRST_CONTACT && [[ "$TRANSPORT" == "cmux" ]]; then
       DELIVERY_RETRIED=$(jq -r 'if has("retried_enter") then (.retried_enter|tostring) else "" end' <<<"$REUSE" 2>/dev/null)
       [[ -s "$CALL_DIR/call_id.txt" ]] && CALL_ID_OUT=$(cat "$CALL_DIR/call_id.txt")
       # The reused surface is unchanged, but bump last_contact / exchange_count.
+      # --call-dir moves with it: this reuse dir is what the NEXT follow-up's
+      # detached_exchange_still_waiting gate looks at, and a stale one would answer
+      # for an exchange two turns old. A reuse dir is keep_workspace=true, so that
+      # gate reads it as closing nothing — which is exactly right.
       bash "$DIAL_SCRIPTS/session-cache.sh" update "$TARGET_PATH" \
         --caller-session "$MY_SESSION_ID" --surface "$SURFACE_REF" \
-        ${CALL_ID_OUT:+--call-id "$CALL_ID_OUT"} >/dev/null 2>&1
+        ${CALL_ID_OUT:+--call-id "$CALL_ID_OUT"} --call-dir "$CALL_DIR" >/dev/null 2>&1
       emit_connected true
     fi
     # {"fallback":"fresh"} — refused BEFORE anything was sent, so a fresh surface is

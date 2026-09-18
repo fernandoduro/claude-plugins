@@ -719,6 +719,7 @@ make_min_surface_cmux "$tmp/bin"
 cat > "$tmp/open-side.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "open-side-surface: --wait-ready timed out after 1s for surface:777 (pane:55)." >&2
+echo "  surface_id=SURFACE-UUID-777 workspace_id=WORKSPACE-UUID-5 pane_id=PANE-UUID-55" >&2
 exit 3
 EOF
 chmod +x "$tmp/open-side.sh"
@@ -766,6 +767,7 @@ make_min_surface_cmux "$tmp/bin"
 cat > "$tmp/open-side.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "open-side-surface: --wait-ready timed out after 1s for surface:777 (pane:55)." >&2
+echo "  surface_id=SURFACE-UUID-777 workspace_id=WORKSPACE-UUID-5 pane_id=PANE-UUID-55" >&2
 exit 3
 EOF
 chmod +x "$tmp/open-side.sh"
@@ -773,7 +775,7 @@ out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" CMUX_FAKE_NO_TREE=1 \
   HOTLINE_OPEN_SIDE_SURFACE="$tmp/open-side.sh" \
   bash "$SCRIPT_UNDER_TEST" --cwd "$tmp/cwd" --prompt "hello" 2>"$tmp/stderr.txt")
 call_dir=$(printf '%s' "$out" | jq -r '.call_dir // empty')
-if grep -q "failed to close the orphan surface surface:777" "$call_dir/surface_err.txt" 2>/dev/null; then
+if grep -q "failed to close the orphan surface SURFACE-UUID-777" "$call_dir/surface_err.txt" 2>/dev/null; then
   pass "a close that cannot be scoped is RECORDED in surface_err.txt, not swallowed"
 else
   fail "a close that cannot be scoped is RECORDED in surface_err.txt, not swallowed" \
@@ -783,6 +785,40 @@ if [[ ! -s "$tmp/close_calls" ]]; then
   pass "…and no unscoped close-surface was attempted as a fallback"
 else
   fail "…and no unscoped close-surface was attempted as a fallback" \
+       "close_calls=$(cat "$tmp/close_calls")"
+fi
+rm -rf "$tmp" "$call_dir"
+
+# AN OPENER THAT NAMES THE ORPHAN ONLY BY POSITIONAL REF IS NOT REAPED. Resolving
+# `surface:777` through the tree does not make the ref correct — it closes
+# whatever occupies slot 777 now, and the readiness probe is a window (8s by
+# default) in which a sibling closing renumbers it onto a live tab. The old
+# unscoped close merely no-op'd here; a scoped one would succeed on the wrong
+# surface. So the skip is recorded and nothing is closed.
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-cmux-test-XXXXXX)
+mkdir -p "$tmp/cwd"
+: > "$tmp/screen.txt"
+make_min_surface_cmux "$tmp/bin"
+cat > "$tmp/open-side.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "open-side-surface: --wait-ready timed out after 1s for surface:777 (pane:55)." >&2
+exit 3
+EOF
+chmod +x "$tmp/open-side.sh"
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" \
+  HOTLINE_OPEN_SIDE_SURFACE="$tmp/open-side.sh" \
+  bash "$SCRIPT_UNDER_TEST" --cwd "$tmp/cwd" --prompt "hello" 2>"$tmp/stderr.txt")
+call_dir=$(printf '%s' "$out" | jq -r '.call_dir // empty')
+if grep -q "NOT reaping orphan surface surface:777" "$call_dir/surface_err.txt" 2>/dev/null; then
+  pass "a ref-only orphan is NOT reaped, and the skip is recorded in surface_err.txt"
+else
+  fail "a ref-only orphan is NOT reaped, and the skip is recorded in surface_err.txt" \
+       "surface_err=$(cat "$call_dir/surface_err.txt" 2>/dev/null || echo NONE)"
+fi
+if [[ ! -s "$tmp/close_calls" ]]; then
+  pass "…and no close-surface went out at all, scoped or otherwise"
+else
+  fail "…and no close-surface went out at all, scoped or otherwise" \
        "close_calls=$(cat "$tmp/close_calls")"
 fi
 rm -rf "$tmp" "$call_dir"
@@ -1322,6 +1358,85 @@ else
   pass "…and no workspace is created carrying the label"
 fi
 [[ -f "$call_dir/launch_script.txt" ]] && rm -f "$(cat "$call_dir/launch_script.txt")"
+rm -rf "$tmp" "$call_dir"
+
+# --window, PTY NEVER READY: the surface we just opened is reaped, scoped to its
+# workspace. THE CONTAINER IS NOT OPTIONAL — `cmux close-surface --surface <uuid>`
+# resolves inside the caller's inherited workspace context and answers "Surface not
+# found" out of it, so the close that passed --surface alone silently no-op'd and
+# left a wedged surface in the user's window (claude-plugins-5k43). This is the
+# least-travelled of the three close sites, which is exactly why it needs its own
+# bite: reverting it to a bare `|| true` used to leave every suite green.
+make_unready_window_cmux() {  # $1 = bin dir
+  mkdir -p "$1"
+  cat > "$1/cmux" <<'EOF'
+#!/usr/bin/env bash
+ST="${CMUX_FAKE_STATE:?}"
+echo "$*" >> "$ST/cmux_calls"
+case "$1" in
+  tree)        echo '{"windows":[{"id":"WIN-B","ref":"window:2","workspaces":[{"id":"WS-P","ref":"workspace:5","title":"proj","panes":[{"ref":"pane:1","index":0,"surfaces":[{"ref":"surface:200","id":"11111111-2222-4333-8444-555555555555","pane_id":"PANE-UUID-9","title":"zsh"}]}]}]}]}' ;;
+  new-surface) echo "OK surface:200 pane:9 workspace:5" ;;
+  # The readiness probe wants the marker back TWICE. This shell swallows input, so
+  # it never echoes at all — the PTY-never-attached case.
+  send)        exit 0 ;;
+  read-screen) exit 0 ;;
+  close-surface)
+    echo "$*" >> "$ST/close_calls"
+    if [[ -n "${CMUX_REFUSE_CLOSE:-}" ]]; then
+      echo 'not_found: Surface not found' >&2
+      exit 1
+    fi ;;
+esac
+exit 0
+EOF
+  chmod +x "$1/cmux"
+}
+
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-cmux-test-XXXXXX)
+mkdir -p "$tmp/cwd"
+make_unready_window_cmux "$tmp/bin"
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" HOTLINE_SURFACE_READY_TIMEOUT=1 \
+  bash "$SCRIPT_UNDER_TEST" --window "window:2" --cwd "$tmp/cwd" --prompt "hello" \
+  2>"$tmp/stderr.txt")
+call_dir=$(printf '%s' "$out" | jq -r '.call_dir // empty')
+if [[ -n "$call_dir" && -f "$call_dir/done" && -f "$call_dir/error.txt" ]]; then
+  pass "--window readiness timeout writes the async error contract"
+else
+  fail "--window readiness timeout writes the async error contract" \
+       "call_dir=$call_dir out=$out stderr=$(cat "$tmp/stderr.txt")"
+fi
+if grep -q "close-surface --workspace WS-P --surface 11111111-2222-4333-8444-555555555555" \
+     "$tmp/close_calls" 2>/dev/null; then
+  pass "…and reaps the unready surface with --workspace, both halves as UUIDs"
+else
+  fail "…and reaps the unready surface with --workspace, both halves as UUIDs" \
+       "close_calls=$(cat "$tmp/close_calls" 2>/dev/null || echo NONE)"
+fi
+if ! grep -qE 'close-surface --surface' "$tmp/close_calls" 2>/dev/null; then
+  pass "…and never the unscoped form, which resolves out of the caller's own workspace"
+else
+  fail "…and never the unscoped form, which resolves out of the caller's own workspace" \
+       "close_calls=$(cat "$tmp/close_calls" 2>/dev/null)"
+fi
+rm -rf "$tmp" "$call_dir"
+
+# …and a close cmux REFUSES is recorded, not swallowed: the call is failing anyway,
+# so the only thing that says a wedged surface was left behind is this diagnostic.
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-cmux-test-XXXXXX)
+mkdir -p "$tmp/cwd"
+make_unready_window_cmux "$tmp/bin"
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" CMUX_REFUSE_CLOSE=1 \
+  HOTLINE_SURFACE_READY_TIMEOUT=1 \
+  bash "$SCRIPT_UNDER_TEST" --window "window:2" --cwd "$tmp/cwd" --prompt "hello" \
+  2>"$tmp/stderr.txt")
+call_dir=$(printf '%s' "$out" | jq -r '.call_dir // empty')
+if grep -q "failed to close the unready surface 11111111-2222-4333-8444-555555555555" \
+     "$call_dir/surface_err.txt" 2>/dev/null; then
+  pass "a refused --window reap lands in surface_err.txt, not in \`|| true\`"
+else
+  fail "a refused --window reap lands in surface_err.txt, not in \`|| true\`" \
+       "surface_err=$(cat "$call_dir/surface_err.txt" 2>/dev/null || echo NONE)"
+fi
 rm -rf "$tmp" "$call_dir"
 
 # The whole point of the poison stubs: a leak is a test failure, not a stray pane.

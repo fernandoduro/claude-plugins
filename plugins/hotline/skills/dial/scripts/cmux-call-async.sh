@@ -513,15 +513,31 @@ else
       [[ -z "$SURF_REF" ]] && fail_async "open-side-surface returned no surface_ref: $SURF_JSON"
     else
       rc=$?
-      ORPHAN=$(grep -oE 'surface:[0-9]+' "$CALL_DIR/surface_err.txt" 2>/dev/null | head -1 || true)
       # The opener named the surface it had already created in its stderr, so
-      # there is one to reap. Only a POSITIONAL ref is available here — that is
-      # all the diagnostic carries — which is why the close resolves it through
-      # the tree: `cmux close-surface` needs --workspace as well, and only the
-      # tree knows which one (claude-plugins-5k43). Recorded, not swallowed: the
-      # `|| true` this replaces made every failed reap invisible.
-      if [[ -n "$ORPHAN" ]] && ! cmux_close_surface_scoped "orphan side surface" "$ORPHAN"; then
-        echo "failed to close the orphan surface $ORPHAN: $CMUX_CLOSE_ERR" \
+      # there is one to reap — but ONLY BY UUID. Resolving a positional
+      # `surface:N` through the tree does not make the ref correct; it makes the
+      # close land on whatever occupies slot N at lookup time, and the window
+      # between the opener minting that ref and this reap is the whole readiness
+      # probe (HOTLINE_SURFACE_READY_TIMEOUT, 8s by default) — long enough for a
+      # sibling to close and renumber it onto a live tab. The old unscoped close
+      # merely no-op'd; a scoped one would succeed on the wrong surface, so a ref
+      # is no longer something to act on.
+      #
+      # The opener prints `surface_id=<uuid>` in the same diagnostic for exactly
+      # this. The close still resolves it through the tree, because
+      # `cmux close-surface` needs --workspace as well (claude-plugins-5k43).
+      # Recorded either way, never swallowed — a skipped reap leaks a wedged
+      # surface, which is worth the same trace as a failed one.
+      ORPHAN_ID=$(grep -oE 'surface_id=[0-9A-Za-z-]+' "$CALL_DIR/surface_err.txt" 2>/dev/null \
+        | head -1 | cut -d= -f2 || true)
+      ORPHAN=$(grep -oE 'surface:[0-9]+' "$CALL_DIR/surface_err.txt" 2>/dev/null | head -1 || true)
+      if [[ -n "$ORPHAN_ID" ]]; then
+        if ! cmux_close_surface_scoped "orphan side surface" "$ORPHAN_ID"; then
+          echo "failed to close the orphan surface $ORPHAN_ID: $CMUX_CLOSE_ERR" \
+            >> "$CALL_DIR/surface_err.txt"
+        fi
+      elif [[ -n "$ORPHAN" ]]; then
+        echo "NOT reaping orphan surface $ORPHAN: the opener named it only by positional ref, which points at whatever occupies that slot now rather than at the surface it opened. Close it by hand — \`cmux tree --all --json --id-format both\` will say which UUID it is." \
           >> "$CALL_DIR/surface_err.txt"
       fi
       SURF_ERR="$(cat "$CALL_DIR/surface_err.txt" 2>/dev/null)"

@@ -763,8 +763,9 @@ cmux_surface_address() {
 
 # Echoes "<workspace-uuid> <surface-uuid>" for a WORKSPACE handle — the surface a
 # payload should go to when the call was placed by workspace rather than by
-# surface (the detached placement, which names a workspace tab and never records a
-# surface).
+# surface (the detached placement, which names a workspace tab). The detached
+# launcher calls this to RESOLVE the surface it then records, so a follow-up can
+# re-address the tab instead of opening another one (claude-plugins-zaus).
 #
 # Same tree, same output shape, same exit codes as cmux_surface_address, so a
 # caller can use either and pass the result on unchanged. Both live here because

@@ -294,9 +294,12 @@ occupies, and only opens a fresh surface when that is refused — which it recor
 `surface-reuse→fresh(<reason>)` in `.fallbacks`. `cmux-reuse-surface.sh`'s header
 documents every refusal condition: a surface that is gone, one showing no input
 box, the post-interrupt "what should Claude do instead?" state, unsent text in the
-box while a turn is in flight, and a box that would not clear. All of them happen
-BEFORE anything is sent, so all of them are reasons, never errors — the follow-up
-still gets through, on a fresh surface. A paste that went out and could not be
+box while a turn is in flight, and a box that would not clear. `dial.sh` declines
+one more before it even asks — `detached-mid-turn`, a DETACHED callee whose
+previous exchange is still being waited on: that wait auto-closes the tab when it
+finishes, which would destroy a follow-up queued behind the live turn. All of them
+are decided BEFORE anything is sent, so all of them are reasons, never errors — the
+follow-up still gets through, on a fresh surface. A paste that went out and could not be
 confirmed is the exception and is not in that list: it is a `deliver` error, for the
 double-execution reason above.
 

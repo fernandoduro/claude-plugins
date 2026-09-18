@@ -711,6 +711,25 @@ if $CMUX_MODE; then
     READ_TARGET=(--workspace "$REF")
   fi
   WS_REF="$REF"
+  # THE CLOSE GETS THE UUID; the reads and the diagnostics keep the ref the
+  # launcher sent to. `close-workspace` fires up to 30 minutes after that ref was
+  # minted, and `workspace:N` names whatever sits in slot N at close time — a tab
+  # earlier in the window closing renumbers it onto the USER'S workspace, which is
+  # then the one reaped, with whatever was running in it. The launcher records
+  # workspace_id.txt for exactly this (cmux-call-async.sh's detached path); a call
+  # dir written before it existed has only the ref, which is what it always used.
+  WS_CLOSE_REF="$WS_REF"
+  if ! $SURFACE_MODE && [[ -s "$CALL_DIR/workspace_id.txt" ]]; then
+    WS_CLOSE_REF=$(cat "$CALL_DIR/workspace_id.txt")
+  fi
+  # The handle of the surface hosting the REPL, whatever the placement — for advice
+  # that has to name a SURFACE. In surface mode WS_REF already is one; a detached
+  # call records surface_ref.txt too now, so `--surface <a workspace ref>` no
+  # longer has to be printed at a caller who would run it.
+  SURFACE_HANDLE="$WS_REF"
+  if ! $SURFACE_MODE && [[ -s "$CALL_DIR/surface_ref.txt" ]]; then
+    SURFACE_HANDLE=$(cat "$CALL_DIR/surface_ref.txt")
+  fi
   KEEP=$(cat "$CALL_DIR/keep_workspace.txt" 2>/dev/null || echo false)
   LAUNCH_SCRIPT=$(cat "$CALL_DIR/launch_script.txt" 2>/dev/null || true)
   SESSION_ID=""
@@ -789,8 +808,8 @@ if $CMUX_MODE; then
       # surface"), so closing the surface would leave the tab open forever
       # (claude-plugins-zaus). A follow-up arriving after this reads its cached
       # surface as gone and takes the existing `surface-reuse→fresh(...)` path.
-      if ! out=$(cmux close-workspace --workspace "$WS_REF" 2>&1); then
-        record_cleanup_failure "could not close workspace $WS_REF after the response: $(printf '%s' "$out" | tr '\n\r\t' '   ' | cut -c1-140)"
+      if ! out=$(cmux close-workspace --workspace "$WS_CLOSE_REF" 2>&1); then
+        record_cleanup_failure "could not close workspace $WS_CLOSE_REF after the response: $(printf '%s' "$out" | tr '\n\r\t' '   ' | cut -c1-140)"
       fi
     fi
     return 0
@@ -998,7 +1017,7 @@ if $CMUX_MODE; then
               {
                 echo "Message is still sitting UNSUBMITTED in the callee's input box after ${SUBMIT_DEADLINE}s — ${BOX_EVIDENCE}, but nothing in the transcript carries call_id=$CALL_ID: no user record, no queued-command injection, no enqueue ($TRANSCRIPT_PATH)."
                 echo "This is a transport failure, not a problem with your message content — escaping/quoting is almost never the cause."
-                echo "Send Enter to the surface (cmux send-key --surface $WS_REF Enter) rather than re-sending the text, which would append to what is already in the box. Or re-dial via a fresh surface."
+                echo "Send Enter to the surface (cmux send-key --surface $SURFACE_HANDLE Enter) rather than re-sending the text, which would append to what is already in the box. Or re-dial via a fresh surface."
               } >&2
               touch "$CALL_DIR/done" 2>/dev/null || true
               cleanup_workspace_and_script
@@ -1039,7 +1058,7 @@ if $CMUX_MODE; then
         {
           echo "Timed out after ${TIMEOUT}s in transcript mode with NO submit confirmation — nothing in the transcript ever carried call_id=$CALL_ID: no user record, no queued-command injection, no enqueue ($TRANSCRIPT_PATH)."
           echo "Could not confirm whether the message submitted: it may still be queued behind a long turn, or it may never have submitted. The script cannot tell these apart from timing alone."
-          echo "To check: cmux read-screen --surface $WS_REF --scrollback --lines 80 (the --scrollback form is scroll-immune; the bare form returns whatever the pane is scrolled to) — if your text is sitting in the input box it never submitted; if the callee is mid-turn it was queued. Do NOT blindly re-dial; that risks double-queueing the same work."
+          echo "To check: cmux read-screen ${READ_TARGET[*]} --scrollback --lines 80 (the --scrollback form is scroll-immune; the bare form returns whatever the pane is scrolled to) — if your text is sitting in the input box it never submitted; if the callee is mid-turn it was queued. Do NOT blindly re-dial; that risks double-queueing the same work."
           echo "To keep waiting instead, re-run this script on the same call_dir — that resumes with a fresh ${TIMEOUT}s budget and sends nothing."
         } > "$CALL_DIR/error.txt"
       else

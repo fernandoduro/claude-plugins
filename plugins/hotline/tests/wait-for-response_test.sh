@@ -93,6 +93,11 @@ fail() {
   FAILED_CASES+=("$1")
   echo "  ✗ $1"
   [[ -n "${2:-}" ]] && echo "    $2"
+  # EXPLICIT, because the `[[ ]] && echo` above returns 1 on an empty detail arg
+  # and this suite runs under `set -e` from its first `set +e`/`set -e` pair on.
+  # A failing case with no detail then killed the run before the summary block,
+  # so the suite exited 1 with no `Result: N passed, M failed` line at all.
+  return 0
 }
 
 # Run one test case. Takes a name, a stream.jsonl body, and an expected
@@ -1127,7 +1132,12 @@ JSONL
   # no longer say which verb to use, and a detached call really does carry a
   # surface handle now.
   echo "$CLEAN_SURF" > "$cd/surface_ref.txt"
-  [[ "$placement" == "detached" ]] && echo "workspace:7" > "$cd/workspace_ref.txt"
+  # workspace_id.txt alongside the ref, exactly as the detached launcher writes
+  # both: the ref is the send/read target, the UUID is what a close scopes with.
+  if [[ "$placement" == "detached" ]]; then
+    echo "workspace:7" > "$cd/workspace_ref.txt"
+    [[ -z "${CLEAN_NO_WS_ID:-}" ]] && echo "WS-UUID-7" > "$cd/workspace_id.txt"
+  fi
   cat > "$sd/cmux" <<STUB
 #!/usr/bin/env bash
 printf '%s\\n' "\$*" >> '$log'
@@ -1190,10 +1200,20 @@ if [[ $RCM -eq 0 ]]; then
 else
   fail "a finished detached call returns its response too, exit 0" "rc=$RCM out=$OUTM"
 fi
-if grep -q "close-workspace --workspace workspace:7" "$LOGM" 2>/dev/null; then
-  pass "…and its tab auto-closes by CLOSE-WORKSPACE, even though it cached a surface"
+# BY UUID, not by the `workspace:7` ref the launcher sent to. The close fires up
+# to 30 minutes later, and a tab closing earlier in the window renumbers slot 7
+# onto the user's own workspace — which is then what gets reaped. workspace_id.txt
+# exists for this; pinning the positional form here is what kept it unread.
+if grep -q "close-workspace --workspace WS-UUID-7" "$LOGM" 2>/dev/null; then
+  pass "…and its tab auto-closes by CLOSE-WORKSPACE, by UUID, even though it cached a surface"
 else
-  fail "…and its tab auto-closes by CLOSE-WORKSPACE, even though it cached a surface" \
+  fail "…and its tab auto-closes by CLOSE-WORKSPACE, by UUID, even though it cached a surface" \
+       "cmux calls: $(cat "$LOGM" 2>/dev/null || echo NONE)"
+fi
+if ! grep -q "close-workspace --workspace workspace:7" "$LOGM" 2>/dev/null; then
+  pass "…and never the positional ref, which names whatever sits in slot 7 at close time"
+else
+  fail "…and never the positional ref, which names whatever sits in slot 7 at close time" \
        "cmux calls: $(cat "$LOGM" 2>/dev/null || echo NONE)"
 fi
 if ! grep -q "close-surface" "$LOGM" 2>/dev/null; then
@@ -1202,6 +1222,23 @@ else
   fail "…closing no surface" "cmux calls: $(cat "$LOGM")"
 fi
 rm -rf "$HM" "$CDM" "$SDM"
+
+# --- A LEGACY detached call dir has only the ref, and still closes ------------
+# Call dirs written before workspace_id.txt existed must keep working, on exactly
+# the handle they always used. The fallback is the ref, not "do not close".
+CL=$(CLEAN_NO_WS_ID=1 setup_cleanup_call detached)
+HO=${CL%%|*}; rO=${CL#*|}; CDO=${rO%%|*}; rOb=${rO#*|}; SDO=${rOb%%|*}; LOGO=${rOb#*|}
+set +e
+HOME="$HO" PATH="$SDO:$PATH" bash "$DIAL_SCRIPTS/wait-for-response.sh" "$CDO" \
+  --timeout 20 --submit-deadline 6 >/dev/null 2>&1
+set -e
+if grep -q "close-workspace --workspace workspace:7" "$LOGO" 2>/dev/null; then
+  pass "a legacy detached dir with no workspace_id.txt falls back to the ref"
+else
+  fail "a legacy detached dir with no workspace_id.txt falls back to the ref" \
+       "cmux calls: $(cat "$LOGO" 2>/dev/null || echo NONE)"
+fi
+rm -rf "$HO" "$CDO" "$SDO"
 
 # --- A close cmux REFUSES is recorded, not swallowed -------------------------
 CL=$(setup_cleanup_call side)

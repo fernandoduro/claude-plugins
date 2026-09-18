@@ -443,6 +443,16 @@ if [[ $WAIT_READY -eq 1 ]]; then
     if [[ "$ready_status" != "ready" ]]; then
       {
         echo "open-side-surface: --wait-ready timed out after ${WAIT_READY_TIMEOUT}s for $new_surface ($new_pane)."
+        # THE UUIDs, in a parseable form, because this exit leaves a surface
+        # behind and the caller's only description of it is this text. A
+        # positional `surface:N` is not a safe thing to reap from: it names
+        # whatever occupies slot N when the close runs, not the surface this
+        # probe opened, and slots renumber the moment any sibling closes. Emitted
+        # only when the tree resolved them — an unresolved id must read as absent,
+        # not as the string "none".
+        if [[ -n "$new_surface_id" ]]; then
+          echo "  surface_id=$new_surface_id workspace_id=$new_ws_id pane_id=$new_pane_id"
+        fi
         echo "  Possible causes:"
         echo "    • Shell still initializing (slow rc files, network mounts, login banner)"
         echo "    • Surface running a non-shell program that doesn't echo input"

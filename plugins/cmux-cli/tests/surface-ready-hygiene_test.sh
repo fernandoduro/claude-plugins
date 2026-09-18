@@ -166,6 +166,51 @@ if ! grep -q 'focus-pane' "$tmp/err.txt"; then
 else
   fail "…and its diagnostic does not recommend focus-pane" "err=$(cat "$tmp/err.txt")"
 fi
+# …and it names the surface it LEFT BEHIND by UUID, parseably. This exit leaves a
+# real surface open, and the caller's only description of it is this text. With
+# only the positional `surface:258` in there, a caller reaping the orphan closes
+# whatever occupies slot 258 when its close runs — which is not necessarily the
+# surface this probe opened, because slots renumber as siblings close.
+if grep -q 'surface_id=SURF-NEW' "$tmp/err.txt"; then
+  pass "…and names the orphan surface by UUID, as surface_id=<uuid>"
+else
+  fail "…and names the orphan surface by UUID, as surface_id=<uuid>" "err=$(cat "$tmp/err.txt")"
+fi
+if grep -q 'workspace_id=WS-UUID' "$tmp/err.txt"; then
+  pass "…with its workspace UUID too, which close-surface requires"
+else
+  fail "…with its workspace UUID too, which close-surface requires" "err=$(cat "$tmp/err.txt")"
+fi
+rm -rf "$tmp"
+
+# An UNREADABLE tree resolves no UUIDs, and the diagnostic must not invent one:
+# `surface_id=` with nothing after it, or the literal "none", would both parse as
+# a handle and put a caller's close back on a guess.
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/cmux-ready-XXXXXX"); make_shim "$tmp"
+cat > "$tmp/bin/cmux" <<'SHIM'
+#!/usr/bin/env bash
+ST="${CMUX_FAKE_STATE:?}"
+case "$1" in
+  identify)
+    jq -n '{caller: {pane_ref:"pane:3", workspace_ref:"workspace:7",
+                     window_ref:"window:1", surface_ref:"surface:11"}}' ;;
+  tree) exit 1 ;;
+  new-pane|new-surface) echo "OK surface:258 pane:3 workspace:7" ;;
+  read-screen) cat "$ST/screen.txt" 2>/dev/null; exit 0 ;;
+  *) exit 0 ;;
+esac
+SHIM
+chmod +x "$tmp/bin/cmux"
+: > "$tmp/screen.txt"
+PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" \
+  bash "$OPENER" --caller --wait-ready --wait-ready-timeout 2 --json \
+  >/dev/null 2>"$tmp/err.txt"
+if ! grep -q 'surface_id=' "$tmp/err.txt"; then
+  pass "an unresolvable surface prints NO surface_id line rather than an empty one"
+else
+  fail "an unresolvable surface prints NO surface_id line rather than an empty one" \
+       "err=$(cat "$tmp/err.txt")"
+fi
 rm -rf "$tmp"
 
 echo ""

@@ -997,6 +997,14 @@ check "…and the session cache learns it, which is what a follow-up reads" $? \
 
 # The follow-up: same target, cached session, live idle REPL in that surface. It
 # must REUSE the tab rather than record the skip and open another one.
+#
+# `done` IS THE PRECONDITION, and it is in the fixture because the real flow puts
+# it there: the caller runs wait-for-response.sh after dial.sh, and every terminal
+# path of that wait writes `done` — including the AWAITING_REVIEW checkpoint, which
+# is the detached exchange that ends with its tab still live and a follow-up
+# expected. Without it the prior exchange is still waiting, and its own auto-close
+# would destroy this message (see 6d-bis).
+touch "$call_dir/done"
 ws_before=$(grep -c 'new-workspace' "$t/cmux_calls" 2>/dev/null || echo 0)
 out2=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-6d3" HOTLINE_PENDING_DIR="$t/pending" \
@@ -1023,6 +1031,76 @@ check "…and opens no second workspace (new-workspace count unchanged)" $? \
 # that tab, and the reuse step runs before any placement decision.
 [[ "$(jq -r .surface_ref <<<"$out2")" == "SURFACE-UUID-DETACHED" ]]
 check "…re-addressing the same surface the first contact recorded" $? "out2=$out2"
+
+# ===========================================================================
+# 6d-bis. A follow-up delivered MID-TURN into a live detached callee does NOT
+#         reuse the tab — the prior exchange's own waiter would destroy it.
+#
+# The detached placement is the one that auto-closes: its waiter reaches
+# cleanup_workspace_and_script with keep_workspace=false and closes the WORKSPACE
+# the moment the prior response is captured. cmux-reuse-surface.sh cannot see that
+# coming — a mid-turn REPL with an empty input box reads as reusable — so the paste
+# is accepted and ENQUEUED behind the live turn, the callee then finishes the PRIOR
+# turn, and the prior waiter closes the tab with this message still in the queue.
+# Dropped work order, plus a second waiter polling a corpse to its full budget.
+#
+# So an unfinished prior exchange (no `done` in its call dir) refuses reuse and
+# opens a fresh tab: the old behaviour, which cost an extra tab and DID deliver.
+# ===========================================================================
+t=$(new_env); note_leak "$t"
+make_cmux "$t/bin"
+printf 'some earlier output\n\xe2\x9d\xaf\xc2\xa0\nClaude Code v2.1.221\n' > "$t/screen.txt"
+out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
+  HOTLINE_CALLER_SESSION_ID="caller-6dbis" HOTLINE_PENDING_DIR="$t/pending" \
+  bash "$DIAL" --target "$t/target" --mode work_order --placement detached \
+    --label "probe label" --prompt "first contact, detached" --boot-timeout 8 2>"$t/err.txt")
+call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+[[ -n "$call_dir" ]] && note_leak "$call_dir"
+launch_script_of "$call_dir" >/dev/null
+target_real=$(cd "$t/target" && pwd -P)
+cache_6dbis="$t/home/.agents-hotline/sessions/caller-6dbis.json"
+
+# The cache has to KNOW which call dir to ask about, or the gate has nothing to
+# read and every follow-up reuses blind.
+[[ "$(jq -r --arg t "$target_real" '.connections[$t].last_call_dir' "$cache_6dbis")" == "$call_dir" ]]
+check "a first contact records its call dir in the session cache" $? \
+  "$(cat "$cache_6dbis" 2>/dev/null)"
+
+# NO `touch done` here: the first exchange's waiter is still running.
+ws_before=$(grep -c 'new-workspace' "$t/cmux_calls" 2>/dev/null || echo 0)
+out2=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
+  HOTLINE_CALLER_SESSION_ID="caller-6dbis" HOTLINE_PENDING_DIR="$t/pending" \
+  bash "$DIAL" --target "$t/target" --mode work_order --placement detached \
+    --label "probe label" --prompt "and now step 2" --boot-timeout 8 2>"$t/err2.txt")
+call_dir2=$(jq -r '.call_dir // empty' <<<"$out2" 2>/dev/null)
+[[ -n "$call_dir2" ]] && note_leak "$call_dir2"
+[[ -n "$call_dir2" ]] && launch_script_of "$call_dir2" >/dev/null
+ws_after=$(grep -c 'new-workspace' "$t/cmux_calls" 2>/dev/null || echo 0)
+
+jq -e '.fallbacks | index("surface-reuse→fresh(detached-mid-turn: prior exchange still waiting)")' \
+  <<<"$out2" >/dev/null 2>&1
+check "a mid-turn follow-up into a detached callee refuses reuse, and says why" $? \
+  "out2=$out2 stderr=$(cat "$t/err2.txt")"
+
+[[ "$ws_after" -gt "$ws_before" ]]
+check "…opening a fresh tab instead, which is the path that delivers the message" $? \
+  "before=$ws_before after=$ws_after calls=$(cat "$t/cmux_calls" 2>/dev/null)"
+
+# Once that wait HAS finished, the same follow-up reuses. `done` is the whole
+# difference, so both arms are asserted against one fixture.
+touch "$call_dir/done"
+ws_before=$(grep -c 'new-workspace' "$t/cmux_calls" 2>/dev/null || echo 0)
+out3=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
+  HOTLINE_CALLER_SESSION_ID="caller-6dbis" HOTLINE_PENDING_DIR="$t/pending" \
+  bash "$DIAL" --target "$t/target" --mode work_order --placement detached \
+    --label "probe label" --prompt "and now step 3" --boot-timeout 8 2>"$t/err3.txt")
+call_dir3=$(jq -r '.call_dir // empty' <<<"$out3" 2>/dev/null)
+[[ -n "$call_dir3" ]] && note_leak "$call_dir3"
+ws_after=$(grep -c 'new-workspace' "$t/cmux_calls" 2>/dev/null || echo 0)
+
+[[ "$(jq -r '.fallbacks | length' <<<"$out3")" == "0" && "$ws_before" == "$ws_after" ]]
+check "…and a finished one reuses the tab outright, opening no second workspace" $? \
+  "out3=$out3 before=$ws_before after=$ws_after stderr=$(cat "$t/err3.txt")"
 
 # ===========================================================================
 # 6e. A follow-up that opens a NEW surface closes the one it superseded

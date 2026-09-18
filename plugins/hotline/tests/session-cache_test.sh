@@ -17,6 +17,13 @@
 #   3. --clear-surface and --surface together are REFUSED rather than resolved
 #      by jq-clause ordering.
 #
+#   3b. last_call_dir round-trips, and is OPTIONAL. It is how a later dial asks
+#      what the previous exchange is still doing: a DETACHED callee's tab
+#      auto-closes when its own response wait finishes, so a follow-up pasted in
+#      while that wait runs is enqueued behind the live turn and then destroyed
+#      with the tab (claude-plugins-zaus). Every entry written before this field
+#      existed simply lacks it, which reads as "nothing known".
+#
 #   4. transport/remote are OPTIONAL and BACKWARD-COMPATIBLE. They say which
 #      backend, and which box, the opaque surface_ref belongs to — without them a
 #      herdr agent name from another box is indistinguishable from a local one, and
@@ -64,6 +71,31 @@ HOME="$T/home" bash "$CACHE" set "$TARGET" --caller-session caller-1 \
 
 [[ "$(conn surface_ref)" == "SURF-A" && "$(conn last_call_id)" == "nonce-1" ]]
 check "set records surface_ref and last_call_id" $? "$(cat "$CACHE_FILE" 2>/dev/null)"
+
+# --- last_call_dir: recorded by set, re-keyed by update, absent when omitted --
+[[ "$(conn last_call_dir)" == "<absent>" ]]
+check "set without --call-dir writes no last_call_dir, the pre-upgrade shape" $? \
+  "$(cat "$CACHE_FILE" 2>/dev/null)"
+
+HOME="$T/home" bash "$CACHE" set "$TARGET" --caller-session caller-1 \
+  --session sess-aaa --mode work_order --surface SURF-A --call-id nonce-1 \
+  --call-dir /tmp/hotline-call-AAAAA >/dev/null
+[[ "$(conn last_call_dir)" == "/tmp/hotline-call-AAAAA" ]]
+check "set --call-dir records the exchange's call dir" $? "$(cat "$CACHE_FILE" 2>/dev/null)"
+
+HOME="$T/home" bash "$CACHE" update "$TARGET" --caller-session caller-1 >/dev/null
+[[ "$(conn last_call_dir)" == "/tmp/hotline-call-AAAAA" ]]
+check "…and an update that omits it leaves it untouched" $? "$(cat "$CACHE_FILE" 2>/dev/null)"
+
+HOME="$T/home" bash "$CACHE" update "$TARGET" --caller-session caller-1 \
+  --call-dir /tmp/hotline-call-BBBBB >/dev/null
+[[ "$(conn last_call_dir)" == "/tmp/hotline-call-BBBBB" ]]
+check "…and update --call-dir re-keys it to the newest exchange" $? \
+  "$(cat "$CACHE_FILE" 2>/dev/null)"
+
+# Back to the fixture the cases below expect: surface_ref SURF-A, nonce-1.
+HOME="$T/home" bash "$CACHE" set "$TARGET" --caller-session caller-1 \
+  --session sess-aaa --mode work_order --surface SURF-A --call-id nonce-1 >/dev/null
 
 # --- update with no --surface leaves it untouched ----------------------------
 HOME="$T/home" bash "$CACHE" update "$TARGET" --caller-session caller-1 >/dev/null
