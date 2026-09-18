@@ -12,7 +12,7 @@
 #   call_dir/done at 2s intervals. headless-call-async.sh's own poller writes
 #   response.json + done.
 #
-#   CMUX mode (surface_ref.txt / workspace_ref.txt present): cmux-call-async.sh
+#   CMUX mode (placement.txt names a cmux placement): cmux-call-async.sh
 #   doesn't run a background poller (under cmux access_mode=cmuxOnly, an orphaned
 #   subshell gets "Broken pipe" on every cmux call). This script (a child of the
 #   caller's cmux-spawned bash, so cmux access works) does the polling itself,
@@ -178,17 +178,18 @@ done
 # --- Backend dispatch --------------------------------------------------------
 # Same contract as wait-for-session.sh, which documents it in full: transport.txt
 # is read FIRST and names the backend ('cmux' | 'herdr' | 'headless'); it is COARSE, so the
-# cmux sub-mode is still surface_ref.txt vs workspace_ref.txt. An absent
-# transport.txt is a legacy call dir and falls back to the old inference; a value
-# outside the contract's set is refused outright (scripts/transport.sh). cmux
-# still resolves through its host handle, because that is what the branch below
-# polls and because a launcher that failed before placing a host hands us a
-# handle-less dir whose error.txt only the file-watch path reports.
+# cmux sub-mode comes from placement.txt. An absent transport.txt is a legacy call
+# dir and falls back to the old inference; a value outside the contract's set is
+# refused outright (scripts/transport.sh). cmux still requires a placement, because
+# that is what names the host the branch below polls and because a launcher that
+# failed before placing one hands us a host-less dir whose error.txt only the
+# file-watch path reports.
 TRANSPORT=$(call_dir_transport "$CALL_DIR") || exit 1
-HAS_SURFACE=false
-HAS_WORKSPACE=false
-[[ -f "$CALL_DIR/surface_ref.txt"   ]] && HAS_SURFACE=true
-[[ -f "$CALL_DIR/workspace_ref.txt" ]] && HAS_WORKSPACE=true
+# Which cmux placement hosts this call, from the launcher's own placement.txt
+# (scripts/transport.sh). Empty means the dir names no cmux host. `|| CMUX_PLACEMENT=""`
+# because this script runs under `set -e`, where the resolver's "no host here"
+# return would otherwise abort instead of taking the file-watch path.
+CMUX_PLACEMENT=$(call_dir_placement "$CALL_DIR") || CMUX_PLACEMENT=""
 
 CMUX_MODE=false
 SURFACE_MODE=false
@@ -208,10 +209,19 @@ case "$TRANSPORT" in
     # call_dir_transport. A backend added to HOTLINE_TRANSPORTS without a branch
     # here would land in this one and file-watch to --timeout, which is the
     # failure claude-plugins-r6jj names.
-    if $HAS_SURFACE || $HAS_WORKSPACE; then CMUX_MODE=true; fi
+    if [[ -n "$CMUX_PLACEMENT" ]]; then CMUX_MODE=true; fi
     ;;
 esac
-if $CMUX_MODE && $HAS_SURFACE; then SURFACE_MODE=true; fi
+# SURFACE_MODE answers two questions at once, and both answers come from the
+# PLACEMENT, not from which handle files exist. A detached call records a surface
+# handle too now — so a follow-up can re-address the tab instead of opening
+# another one — and inferring the sub-mode from that handle would poll the right
+# thing but close the wrong one: `cmux close-surface` cannot close the only
+# surface in a workspace ("invalid_state: Cannot close the last surface"), so a
+# detached tab would never auto-close again (claude-plugins-zaus).
+if $CMUX_MODE; then
+  case "$CMUX_PLACEMENT" in side|window) SURFACE_MODE=true ;; esac
+fi
 # CMUX mode gets a longer default (30 min) since work orders can run a while.
 # herdr shares it: the same work orders, and its whole selling point is outliving
 # the events that would have killed a cmux surface.
@@ -691,7 +701,8 @@ fi
 
 if $CMUX_MODE; then
   # Resolve the read-screen target: a surface (side-by-side/window placement)
-  # or a workspace (detached placement).
+  # or a workspace (detached placement). See SURFACE_MODE above — the placement
+  # decides, not which handle files happen to be present.
   if $SURFACE_MODE; then
     REF=$(cat "$CALL_DIR/surface_ref.txt")
     READ_TARGET=(--surface "$REF")
@@ -732,20 +743,57 @@ if $CMUX_MODE; then
     rm -f "$LAUNCH_SCRIPT" 2>/dev/null || true
   }
 
+  # A CLEANUP FAILURE IS RECORDED, NEVER SWALLOWED. Both closes below used to end
+  # in `|| true`, so a close that cmux refused left no trace whatsoever: the call
+  # reported success, the surface or tab stayed open, and nothing anywhere said why
+  # (claude-plugins-5k43). The diagnostic goes to three places a reader actually
+  # reaches — cleanup_err.txt in the call dir, this script's stderr, and an
+  # additive `cleanup_error` on the response JSON, which is the only one the
+  # calling AGENT reads by default. response.json is written before every call to
+  # cleanup_workspace_and_script and re-read by emit_response_json, so the field
+  # reaches stdout too.
+  record_cleanup_failure() {
+    printf '%s\n' "$1" >> "$CALL_DIR/cleanup_err.txt"
+    printf 'hotline: %s\n' "$1" >&2
+    [[ -f "$CALL_DIR/response.json" ]] || return 0
+    if jq -c --arg e "$1" '. + {cleanup_error: $e}' "$CALL_DIR/response.json" \
+         > "$CALL_DIR/response.json.tmp" 2>/dev/null; then
+      mv -f "$CALL_DIR/response.json.tmp" "$CALL_DIR/response.json"
+    else
+      rm -f "$CALL_DIR/response.json.tmp"
+    fi
+    return 0
+  }
+
   cleanup_workspace_and_script() {
+    local out
     rm -f "$LAUNCH_SCRIPT" 2>/dev/null || true
-    if [[ "$KEEP" != "true" ]]; then
-      # Suppress BOTH stdout and stderr — close-{surface,workspace}'s "OK …"
-      # message would otherwise pollute the JSON we emit on stdout, breaking
-      # jq parsing in callers. Surface placements default to KEEP=true (the
-      # surface lives in the caller's own window and is meant to stay visible),
-      # so this close path is normally only taken in detached/workspace mode.
-      if $SURFACE_MODE; then
-        cmux close-surface --surface "$WS_REF" >/dev/null 2>&1 || true
-      else
-        cmux close-workspace --workspace "$WS_REF" >/dev/null 2>&1 || true
+    [[ "$KEEP" == "true" ]] && return 0
+    # Stdout is discarded on both paths — close-{surface,workspace}'s "OK …"
+    # message would otherwise pollute the JSON we emit on stdout, breaking jq
+    # parsing in callers. Stderr is now CAPTURED rather than discarded, because it
+    # is the only thing that says why a close did not happen.
+    if $SURFACE_MODE; then
+      # --workspace is not optional here, even for a surface UUID — see
+      # cmux_close_surface_scoped in repl-state.sh. Surface placements default to
+      # KEEP=true (the surface lives in the caller's own window and is meant to
+      # stay visible), so this branch is only reached when a caller asked for a
+      # surface placement AND for it to be closed.
+      cmux_close_surface_scoped "response-time cleanup" "$WS_REF" \
+        || record_cleanup_failure "could not close surface $WS_REF after the response: $CMUX_CLOSE_ERR"
+    else
+      # A DETACHED callee's tab auto-closes once its response is captured — that is
+      # the placement's contract, and it is why a detached call is closed by
+      # WORKSPACE even though it records a surface handle now: cmux refuses to close
+      # the last surface in a workspace ("invalid_state: Cannot close the last
+      # surface"), so closing the surface would leave the tab open forever
+      # (claude-plugins-zaus). A follow-up arriving after this reads its cached
+      # surface as gone and takes the existing `surface-reuse→fresh(...)` path.
+      if ! out=$(cmux close-workspace --workspace "$WS_REF" 2>&1); then
+        record_cleanup_failure "could not close workspace $WS_REF after the response: $(printf '%s' "$out" | tr '\n\r\t' '   ' | cut -c1-140)"
       fi
     fi
+    return 0
   }
 
   # The one exit-3 site. Reached either at the end of the grace window or when the

@@ -126,8 +126,14 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   are what make the call resolve at all; the UUID is what keeps it pointed at the same
   thing, since refs renumber between the snapshot and the call. Enumerate with
   `--id-format both` — without it every `.id` is null, so you *cannot* target correctly
-  — and take each container's `.id` from that same snapshot. Guarded by
-  `plugins/cmux-cli/tests/side-surface-scope_test.sh`. (claude-plugins-xysx, -qyj1)
+  — and take each container's `.id` from that same snapshot. It binds `close-surface`
+  too, where three call sites passed `--surface` alone under `|| true`, so each reap
+  silently no-op'd and leaked the surface with no trace anywhere: a cleanup close
+  reports its failure into the call dir rather than swallowing it. Guarded by
+  `plugins/cmux-cli/tests/side-surface-scope_test.sh` and, for the close verb,
+  `cmux_close_surface_scoped`'s cases in `plugins/hotline/tests/`
+  (`cmux-call-async_test.sh`, `wait-for-response_test.sh`).
+  (claude-plugins-xysx, -qyj1, -5k43)
 - **Read a cmux screen with `--scrollback --lines N`; a bare read may only measure
   the pane** (`cmux_screen_rows`), never feed a content decision — bare reads follow
   the user's scroll. Guards enforce this in `plugins/hotline/tests/`
@@ -184,6 +190,16 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   parser drift guard" — this entry adds only the evidence that it keeps happening:
   after both sections existed, nonce injection still grew three copies and a bug fix
   had to land in two of them. (claude-plugins-xick, 279f98e)
+- **A signal carried by a file's ABSENCE can mean exactly one thing; the moment it
+  must mean two, give it a name.** hotline's call dir inferred the cmux sub-mode from
+  which host-handle file existed, so `no surface_ref.txt` meant "this degraded",
+  "poll and close the workspace" AND "there is nothing for a follow-up to reuse" —
+  and recording the one handle a detached callee needed would have silenced the other
+  two, which is why every follow-up into a detached callee opened another tab. The
+  backend signal one layer up had already outgrown the same inference and become
+  `transport.txt`; when a second reader wants a different answer from one absence,
+  write the fact to its own file and give both readers the same function to read it.
+  (claude-plugins-zaus, -r6jj)
 - **A locally-scoped resolver is wrong across a wire in both directions.**
   `resolve-workspace.sh` validates a path with `realpath`, reverse-looks-up the local
   session cache and consults the local dirmap — so given a `--remote` target it either

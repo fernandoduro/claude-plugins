@@ -82,14 +82,17 @@ done
 # backend outright: 'cmux', 'herdr' or 'headless'. It is read FIRST and it is a
 # COARSE selector — it says which backend owns this call dir, NOT which cmux sub-mode.
 # The sub-mode is still the host-handle distinction it always was:
-#   surface mode    — surface_ref.txt present (side-by-side / --window placement).
-#                     Poll the cmux SURFACE.
-#   workspace mode  — workspace_ref.txt present (--detached placement).
-#                     Poll the cmux WORKSPACE.
+#   surface mode    — placement.txt says 'side' or 'window'. Poll the cmux
+#                     SURFACE named in surface_ref.txt.
+#   workspace mode  — placement.txt says 'detached'. Poll the cmux WORKSPACE named
+#                     in workspace_ref.txt. A detached call records a surface
+#                     handle as well, for a follow-up to re-address; that handle
+#                     is NOT what decides the sub-mode (claude-plugins-zaus).
 #
 # An ABSENT transport.txt is a legacy call dir — one created before this signal
-# existed, or staged by hand. Infer the backend from the handle files exactly as
-# before: a handle means cmux, no handle means headless.
+# existed, or staged by hand. Infer the backend from the placement exactly as
+# before: a cmux placement (or, for a dir predating placement.txt, a host handle)
+# means cmux; nothing means headless.
 #
 # A transport.txt naming a backend OUTSIDE the contract's set is refused outright
 # rather than inferred — see scripts/transport.sh for why guessing is the worse
@@ -97,12 +100,12 @@ done
 # accepts a name and the dispatch here honours it, so the two never disagree
 # about what 'herdr' means (claude-plugins-r6jj).
 #
-# WHY cmux STILL REQUIRES ITS HANDLE. The cmux branch below polls a surface or a
-# workspace by ref, so a cmux call dir with no handle has nothing to poll — and
-# that state is real, not hypothetical: transport.txt is written with the dir,
-# well before a host is placed, and a launcher whose placement fails writes
-# done+error.txt and hands that handle-less dir straight to this script. It takes
-# the file-watch path below, whose check_early_fail reports the launcher's own
+# WHY cmux STILL REQUIRES A PLACEMENT. The cmux branch below polls a surface or a
+# workspace by ref, so a cmux call dir with no placement and no handle has nothing
+# to poll — and that state is real, not hypothetical: transport.txt is written with
+# the dir, well before a host is placed, and a launcher whose placement fails
+# writes done+error.txt and hands that dir straight to this script. It takes the
+# file-watch path below, whose check_early_fail reports the launcher's own
 # error.txt. Forcing it down the cmux branch would replace that diagnosis with a
 # bare `cat: no such file` from the ref read.
 #
@@ -110,10 +113,12 @@ done
 # receiver claude REPL to actually boot, not just a file to appear. Headless mode
 # keeps its existing 30s default.
 TRANSPORT=$(call_dir_transport "$CALL_DIR") || exit 1
-HAS_SURFACE=false
-HAS_WORKSPACE=false
-[[ -f "$CALL_DIR/surface_ref.txt"   ]] && HAS_SURFACE=true
-[[ -f "$CALL_DIR/workspace_ref.txt" ]] && HAS_WORKSPACE=true
+# Which cmux placement hosts this call, from the launcher's own placement.txt
+# (scripts/transport.sh). Empty means the dir names no cmux host at all — headless,
+# or a launcher that died before placing one. `|| CMUX_PLACEMENT=""` because this
+# script runs under `set -e`, where the resolver's "no host here" return would
+# otherwise abort instead of taking the file-watch path below.
+CMUX_PLACEMENT=$(call_dir_placement "$CALL_DIR") || CMUX_PLACEMENT=""
 
 CMUX_MODE=false
 SURFACE_MODE=false
@@ -137,16 +142,21 @@ case "$TRANSPORT" in
     HERDR_MODE=true
     ;;
   *)
-    # 'cmux', or absent (legacy inference). Both resolve through the host handle —
+    # 'cmux', or absent (legacy inference). Both resolve through the placement —
     # see the note above. Every backend the contract names has its own branch
     # above, so nothing but those two reaches here: a value outside the known set
     # was already refused by call_dir_transport, and adding a fourth backend to
     # HOTLINE_TRANSPORTS without a branch of its own would land it here and
     # file-watch it to --timeout (claude-plugins-r6jj).
-    if $HAS_SURFACE || $HAS_WORKSPACE; then CMUX_MODE=true; fi
+    if [[ -n "$CMUX_PLACEMENT" ]]; then CMUX_MODE=true; fi
     ;;
 esac
-if $CMUX_MODE && $HAS_SURFACE; then SURFACE_MODE=true; fi
+# A DETACHED call is polled by WORKSPACE even though it now records a surface
+# handle too. The surface is there for a follow-up to re-address; the workspace is
+# what owns the tab, and what its cleanup closes (claude-plugins-zaus).
+if $CMUX_MODE; then
+  case "$CMUX_PLACEMENT" in side|window) SURFACE_MODE=true ;; esac
+fi
 # The defaults live in repl-state.sh, not here. dial.sh derives the paste's
 # input-box wait from the same numbers — they are waiting for the same event — and
 # with two definitions the documented 60 was true of this wait and not of that one.

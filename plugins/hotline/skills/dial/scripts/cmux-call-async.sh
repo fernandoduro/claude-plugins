@@ -12,9 +12,27 @@
 # Same call_dir interface as headless-call-async.sh:
 #   transport.txt        — 'cmux'. The explicit backend signal the wait-for-*
 #                          scripts read first; coarse (it names the backend, not the
-#                          sub-mode), so the ref files below still pick the cmux one.
-#   workspace_ref.txt    — the cmux workspace ref (signals "cmux mode" to
-#                          the wait-for-* scripts)
+#                          sub-mode), so placement.txt below picks the cmux one.
+#   placement.txt        — 'side' | 'detached' | 'window': which cmux placement
+#                          HOSTS this call, written once the placement is FINAL
+#                          (so a side-by-side that degraded reads 'detached').
+#                          This is the sub-mode signal — which host the waiters
+#                          poll, and which verb closes it. It used to be inferred
+#                          from which ref file existed, which meant a detached
+#                          call could not record its surface without being read
+#                          as a side placement (claude-plugins-zaus). Read via
+#                          call_dir_placement (scripts/transport.sh).
+#   degraded.txt         — present only when side-by-side degraded to detached
+#                          because the caller's own surface context was
+#                          unresolvable; holds the fallback name dial.sh records.
+#   workspace_ref.txt    — the cmux workspace ref, for a DETACHED call: the tab
+#                          the callee lives in, and what its cleanup closes.
+#   workspace_id.txt     — that workspace as a UUID, for calls that must scope a
+#                          close (`cmux close-surface` needs --workspace).
+#   surface_ref.txt      — the surface UUID hosting the callee's REPL. Present
+#                          for EVERY placement that resolved one, detached
+#                          included: it is the handle a follow-up re-addresses
+#                          instead of opening another tab.
 #   session_id_preset.txt — the UUID we passed to `claude --session-id`,
 #                          confirmed by wait-for-session.sh when the splash
 #                          banner appears (then promoted to session_id.txt)
@@ -72,9 +90,9 @@ Usage: cmux-call-async.sh --cwd <path> --prompt <text> [--resume <id>]
 Opens an interactive claude session in a cmux workspace and returns immediately
 with {"call_dir": "/tmp/hotline-call-XXXXX"}. The caller then drives polling
 via wait-for-session.sh and wait-for-response.sh — those scripts read
-workspace_ref.txt from the call_dir to detect cmux mode and poll the cmux
-workspace screen directly (they retain cmux ancestry, this script's
-background subshell would not).
+placement.txt from the call_dir to learn which cmux host this call landed on,
+and poll that surface or workspace screen directly (they retain cmux ancestry,
+this script's background subshell would not).
 
 Options:
   --label <text>     What the callee is DOING. Used as the workspace name for
@@ -402,6 +420,38 @@ do_detached() {
     echo "detached workspace $WS_REF never echoed the readiness probe; sending the launch command anyway" \
       >> "$CALL_DIR/surface_err.txt"
   fi
+
+  # ---- Which surface is in there, so a follow-up can re-address it -----------
+  # A detached callee lives in exactly ONE surface, and nothing used to record
+  # which: the call dir held only the workspace ref, so register-call.sh cached no
+  # surface handle and every follow-up recorded
+  # `surface-reuse-skipped(no-cached-surface)` and opened another tab
+  # (claude-plugins-zaus). placement.txt is what now tells the waiters this is
+  # still a DETACHED call, so recording a surface here no longer implies one.
+  #
+  # THE UUID, never the positional ref, and resolved after `new-workspace` has
+  # returned rather than guessed from its output: `surface:N` names whatever
+  # currently sits in slot N, slots renumber when tabs move or siblings close, and
+  # this handle is read on a LATER turn — precisely when that has happened.
+  #
+  # Best effort by design. The workspace and its PTY are already up, so a tree
+  # that cannot be read costs a follow-up its reuse — the behaviour every detached
+  # call had until now — and must not fail a call that otherwise succeeded. The
+  # `|| true` is required rather than defensive: under `set -e` a resolver that
+  # finds nothing would abort the launcher here instead of letting the call
+  # proceed without the handle (docs/compounding.md, the read-guard entry).
+  local WS_ADDR
+  WS_ADDR=$(cmux_workspace_current_surface "$WS_REF" || true)
+  if [[ -n "$WS_ADDR" ]]; then
+    echo "${WS_ADDR##* }" > "$CALL_DIR/surface_ref.txt"
+    # The workspace as a UUID. `cmux close-surface` needs --workspace and a
+    # positional workspace ref renumbers the same way a surface ref does, so the
+    # cleanup path gets the id, not the `workspace:N` above.
+    echo "${WS_ADDR%% *}" > "$CALL_DIR/workspace_id.txt"
+  else
+    echo "could not resolve the surface inside detached workspace $WS_REF from the cmux tree; a follow-up will open a fresh tab rather than reuse this one" \
+      >> "$CALL_DIR/surface_err.txt"
+  fi
 }
 
 if [[ "$PLACEMENT" == "detached" ]]; then
@@ -431,7 +481,16 @@ else
     SURF_PANE_ID=$(printf '%s' "$SURF_JSON" | jq -r '.pane_id // empty')
     [[ -z "$SURF_REF" ]] && fail_async "open-window-surface returned no surface_ref: $SURF_JSON"
     if [[ "$(printf '%s' "$SURF_JSON" | jq -r '.ready // empty')" == "timeout" ]]; then
-      cmux close-surface --surface "$SURF_REF" >/dev/null 2>&1 || true
+      # Reap the surface we just opened: its PTY never attached, so nothing can
+      # use it and the call is about to fail. --workspace is not optional — see
+      # cmux_close_surface_scoped — and a close that fails is RECORDED rather
+      # than swallowed, because a silent no-op here leaks a wedged surface into
+      # the user's window with no trace of why (claude-plugins-5k43). Prefer the
+      # UUID the opener gave us; its positional ref is the fallback.
+      if ! cmux_close_surface_scoped "unready window surface" "${SURF_ID:-$SURF_REF}"; then
+        echo "failed to close the unready surface ${SURF_ID:-$SURF_REF}: $CMUX_CLOSE_ERR" \
+          >> "$CALL_DIR/surface_err.txt"
+      fi
       fail_async "surface $SURF_REF PTY never became ready (see surface_err.txt)"
     fi
   else
@@ -455,7 +514,16 @@ else
     else
       rc=$?
       ORPHAN=$(grep -oE 'surface:[0-9]+' "$CALL_DIR/surface_err.txt" 2>/dev/null | head -1 || true)
-      [[ -n "$ORPHAN" ]] && cmux close-surface --surface "$ORPHAN" >/dev/null 2>&1 || true
+      # The opener named the surface it had already created in its stderr, so
+      # there is one to reap. Only a POSITIONAL ref is available here — that is
+      # all the diagnostic carries — which is why the close resolves it through
+      # the tree: `cmux close-surface` needs --workspace as well, and only the
+      # tree knows which one (claude-plugins-5k43). Recorded, not swallowed: the
+      # `|| true` this replaces made every failed reap invisible.
+      if [[ -n "$ORPHAN" ]] && ! cmux_close_surface_scoped "orphan side surface" "$ORPHAN"; then
+        echo "failed to close the orphan surface $ORPHAN: $CMUX_CLOSE_ERR" \
+          >> "$CALL_DIR/surface_err.txt"
+      fi
       SURF_ERR="$(cat "$CALL_DIR/surface_err.txt" 2>/dev/null)"
       if [[ "$rc" -eq 3 ]]; then
         fail_async "side-by-side surface PTY never became ready (see surface_err.txt)"
@@ -474,10 +542,17 @@ else
         # Side-by-side needs that context; detached does not (it opens its own
         # new workspace). Rather than fail the whole call, degrade to detached so the
         # dial still completes — the callee just lands in its own tab instead of a
-        # sibling pane. surface_err.txt is preserved for diagnosis. dial.sh detects
-        # this degrade structurally (workspace_ref.txt without surface_ref.txt) and
-        # records the `surface-context→detached` fallback, so nothing is silent.
+        # sibling pane. surface_err.txt is preserved for diagnosis, and degraded.txt
+        # below is what dial.sh reads to record the `surface-context→detached`
+        # fallback, so nothing is silent.
+        #
+        # AN EXPLICIT MARKER, not the shape of the call dir. dial.sh used to infer
+        # this degrade from `workspace_ref.txt && ! surface_ref.txt`, which made the
+        # absence of a surface handle carry two meanings at once — and a detached
+        # callee cannot record the surface a follow-up needs while its absence is
+        # also the degrade signal (claude-plugins-zaus).
         PLACEMENT="detached"
+        echo "surface-context→detached" > "$CALL_DIR/degraded.txt"
         do_detached
       else
         fail_async "open-side-surface.sh failed (rc=$rc): $SURF_ERR"
@@ -495,11 +570,12 @@ else
     # as opaque cmux handles.
     SURF_HANDLE="${SURF_ID:-$SURF_REF}"
     SURF_PANE_HANDLE="${SURF_PANE_ID:-$SURF_PANE}"
-    # surface_ref.txt is the cmux-SURFACE-mode signal to the wait-for-* scripts
-    # (mirrors how workspace_ref.txt signals workspace mode). pane_ref.txt is
-    # recorded for diagnosis and for a human who needs to find the pane. Nothing
-    # reads it to force PTY attachment: a send attaches the PTY, and focus-pane
-    # would attach it by moving the user's cursor into the callee.
+    # surface_ref.txt is the handle of the surface hosting the callee's REPL — what
+    # the waiters poll and what a follow-up re-addresses. It is NOT the surface-mode
+    # signal any more: placement.txt is (a detached call records a surface too).
+    # pane_ref.txt is recorded for diagnosis and for a human who needs to find the
+    # pane. Nothing reads it to force PTY attachment: a send attaches the PTY, and
+    # focus-pane would attach it by moving the user's cursor into the callee.
     echo "$SURF_HANDLE" > "$CALL_DIR/surface_ref.txt"
     [[ -n "$SURF_PANE_HANDLE" ]] && echo "$SURF_PANE_HANDLE" > "$CALL_DIR/pane_ref.txt"
     SEND_TARGET=(--surface "$SURF_HANDLE")
@@ -510,6 +586,17 @@ else
     echo "$KEEP_WORKSPACE" > "$CALL_DIR/keep_workspace.txt"
   fi
 fi
+
+# ---- Which placement actually hosts this call ------------------------------
+# HERE, not at argument-parsing time: $PLACEMENT is only final once the degrade
+# above has or has not fired, and the waiters need the placement that HAPPENED.
+# 'sidebyside' is this script's internal spelling; 'side' is the word dial.sh
+# emits as `.placement` and the one call_dir_placement knows, so one vocabulary
+# reaches every reader. See scripts/transport.sh for what reads it.
+case "$PLACEMENT" in
+  sidebyside) echo side     > "$CALL_DIR/placement.txt" ;;
+  *)          echo "$PLACEMENT" > "$CALL_DIR/placement.txt" ;;
+esac
 
 # Fire the claude session into whichever surface/workspace we landed on.
 #

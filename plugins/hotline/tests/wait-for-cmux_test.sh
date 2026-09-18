@@ -686,6 +686,13 @@ make_surface_fake_cmux() {
 case "$1" in
   read-screen)    echo "$@" >> "${CMUX_FAKE_STATE:?}/read_calls"; cat "${CMUX_FAKE_SCREEN:?}" ;;
   focus-pane)     echo "$@" >> "${CMUX_FAKE_STATE:?}/focus_calls" ;;
+  # `cmux close-surface` needs --workspace as well as --surface (it resolves the
+  # surface inside a workspace context), and only the tree knows which workspace —
+  # so a stub that records close calls has to answer `tree` or the close never
+  # happens at all (claude-plugins-5k43).
+  tree)           jq -nc '{windows:[{workspaces:[{id:"WS-UUID-777",ref:"workspace:5",
+                    panes:[{selected_surface_id:"SURF-UUID-777",
+                            surfaces:[{id:"SURF-UUID-777",ref:"surface:777"}]}]}]}]}' ;;
   close-surface)  echo "$@" >> "${CMUX_FAKE_STATE:?}/close_surface_calls" ;;
   close-workspace)echo "$@" >> "${CMUX_FAKE_STATE:?}/close_workspace_calls" ;;
   *)              exit 0 ;;
@@ -779,10 +786,14 @@ stage_surface_call_dir "$cd" "surf-preset-3" "surface:777" "false"
 echo "surf-preset-3" > "$cd/session_id.txt"
 PATH="$tmp/bin:$PATH" CMUX_FAKE_SCREEN="$tmp/screen.txt" CMUX_FAKE_STATE="$tmp" \
   bash "$WAIT_RESPONSE" "$cd" --timeout 5 >/dev/null 2>"$tmp/err.txt"
-if grep -q "close-surface --surface surface:777" "$tmp/close_surface_calls" 2>/dev/null; then
-  pass "surface mode: keep=false closes the SURFACE"
+# SCOPED, and by UUID on both halves: the positional surface:777 the call dir
+# holds is only what starts the tree lookup. `--surface` alone resolves in the
+# caller's inherited workspace context and answers "Surface not found" out of it,
+# which is how this close silently no-op'd under `|| true` (claude-plugins-5k43).
+if grep -q "close-surface --workspace WS-UUID-777 --surface SURF-UUID-777" "$tmp/close_surface_calls" 2>/dev/null; then
+  pass "surface mode: keep=false closes the SURFACE, scoped to its workspace"
 else
-  fail "surface mode: keep=false closes the SURFACE" \
+  fail "surface mode: keep=false closes the SURFACE, scoped to its workspace" \
        "calls=$(cat "$tmp/close_surface_calls" 2>/dev/null || echo NONE)"
 fi
 if [[ ! -f "$tmp/close_workspace_calls" ]]; then

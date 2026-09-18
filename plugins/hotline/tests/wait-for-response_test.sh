@@ -1087,6 +1087,155 @@ else
 fi
 rm -rf "$HC" "$CDC" "$SDC"
 
+# ===========================================================================
+# Response-time cleanup: the right verb, scoped, and never silent.
+#
+# TWO BUGS MEET HERE. `cmux close-surface --surface <handle>` resolves inside the
+# caller's inherited workspace context and answers "Surface not found" out of it,
+# so the close that passed --surface alone silently no-op'd and leaked the surface
+# (claude-plugins-5k43) — under `|| true`, so nothing anywhere recorded it. And a
+# DETACHED call now records a surface handle of its own so a follow-up can reuse
+# its tab (claude-plugins-zaus), which means the surface-vs-workspace decision can
+# no longer be read off which handle files exist: cmux refuses to close the last
+# surface in a workspace, so closing the surface would leave the detached tab open
+# forever. placement.txt decides.
+# ===========================================================================
+echo ""
+echo "Response-time cleanup:"
+
+CLEAN_SURF="11111111-2222-4333-8444-555555555555"
+
+# A finished turn, keep_workspace=false, and a cmux stub that logs every call and
+# answers `tree` so a scoped close can resolve its workspace.
+setup_cleanup_call() {  # $1 = placement  → echoes "HOME|CALL_DIR|STUBDIR|LOG"
+  local placement="$1" h cd sd cwd enc log
+  h=$(mktemp -d); cd=$(mktemp -d "$TMP_ROOT"/hotline-clean-XXXXX); sd=$(mktemp -d)
+  log="$sd/cmux.log"
+  cwd="/fake/callee/ws"
+  enc=$(printf '%s' "$cwd" | sed 's|[^a-zA-Z0-9]|-|g')
+  mkdir -p "$h/.claude/projects/$enc"
+  cat > "$h/.claude/projects/$enc/sess-tcm.jsonl" <<JSONL
+{"type":"user","isSidechain":false,"sessionId":"sess-tcm","message":{"content":"[CALL_ID: $TNONCE] finish up"}}
+{"type":"assistant","isSidechain":false,"sessionId":"sess-tcm","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"STATUS: WORK_IN_PROGRESS call_id=$TNONCE\\nall done\\nSTATUS: DONE call_id=$TNONCE"}]}}
+JSONL
+  echo "$cwd"       > "$cd/cwd.txt"
+  echo "sess-tcm"   > "$cd/session_id.txt"
+  echo "$TNONCE"    > "$cd/call_id.txt"
+  echo "$placement" > "$cd/placement.txt"
+  echo "false"      > "$cd/keep_workspace.txt"
+  # BOTH handles, on BOTH placements. That is the point of this section: the files
+  # no longer say which verb to use, and a detached call really does carry a
+  # surface handle now.
+  echo "$CLEAN_SURF" > "$cd/surface_ref.txt"
+  [[ "$placement" == "detached" ]] && echo "workspace:7" > "$cd/workspace_ref.txt"
+  cat > "$sd/cmux" <<STUB
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> '$log'
+if [[ "\$1" == "tree" ]]; then
+  jq -nc --arg s '$CLEAN_SURF' '{windows:[{workspaces:[{id:"WS-UUID-7",ref:"workspace:7",
+    panes:[{selected_surface_id:\$s, surfaces:[{id:\$s,ref:"surface:7"}]}]}]}]}'
+fi
+# CMUX_REFUSE_CLOSE models the failure this whole section exists for: a close cmux
+# will not perform, which used to vanish into \`|| true\`.
+if [[ "\$1" == "close-surface" && -n "\${CMUX_REFUSE_CLOSE:-}" ]]; then
+  echo 'not_found: Surface not found' >&2
+  exit 1
+fi
+exit 0
+STUB
+  chmod +x "$sd/cmux"
+  : > "$log"
+  echo "$h|$cd|$sd|$log"
+}
+
+# --- Surface placement: close the SURFACE, scoped to its workspace, by UUID ---
+CL=$(setup_cleanup_call side)
+HL=${CL%%|*}; rL=${CL#*|}; CDL=${rL%%|*}; rLb=${rL#*|}; SDL=${rLb%%|*}; LOGL=${rLb#*|}
+set +e
+OUTL=$(HOME="$HL" PATH="$SDL:$PATH" bash "$DIAL_SCRIPTS/wait-for-response.sh" "$CDL" \
+  --timeout 20 --submit-deadline 6 2>/dev/null)
+RCL=$?
+set -e
+if [[ $RCL -eq 0 && "$(printf '%s' "$OUTL" | jq -r .response 2>/dev/null)" == *"all done"* ]]; then
+  pass "a finished surface-placement call returns its response, exit 0"
+else
+  fail "a finished surface-placement call returns its response, exit 0" "rc=$RCL out=$OUTL"
+fi
+if grep -q "close-surface --workspace WS-UUID-7 --surface $CLEAN_SURF" "$LOGL" 2>/dev/null; then
+  pass "…and its close-surface carries --workspace, both halves as UUIDs"
+else
+  fail "…and its close-surface carries --workspace, both halves as UUIDs" \
+       "cmux calls: $(cat "$LOGL" 2>/dev/null || echo NONE)"
+fi
+if ! grep -q "close-workspace" "$LOGL" 2>/dev/null; then
+  pass "…and closes no workspace: the surface lives in the caller's own window"
+else
+  fail "…and closes no workspace" "cmux calls: $(cat "$LOGL")"
+fi
+rm -rf "$HL" "$CDL" "$SDL"
+
+# --- Detached placement: still the WORKSPACE, surface handle notwithstanding ---
+# THE AUTO-CLOSE GUARD. Were the sub-mode still inferred from surface_ref.txt this
+# would close the surface — which cmux refuses for the last surface in a workspace
+# — and a detached tab would survive every call it hosted.
+CL=$(setup_cleanup_call detached)
+HM=${CL%%|*}; rM=${CL#*|}; CDM=${rM%%|*}; rMb=${rM#*|}; SDM=${rMb%%|*}; LOGM=${rMb#*|}
+set +e
+OUTM=$(HOME="$HM" PATH="$SDM:$PATH" bash "$DIAL_SCRIPTS/wait-for-response.sh" "$CDM" \
+  --timeout 20 --submit-deadline 6 2>/dev/null)
+RCM=$?
+set -e
+if [[ $RCM -eq 0 ]]; then
+  pass "a finished detached call returns its response too, exit 0"
+else
+  fail "a finished detached call returns its response too, exit 0" "rc=$RCM out=$OUTM"
+fi
+if grep -q "close-workspace --workspace workspace:7" "$LOGM" 2>/dev/null; then
+  pass "…and its tab auto-closes by CLOSE-WORKSPACE, even though it cached a surface"
+else
+  fail "…and its tab auto-closes by CLOSE-WORKSPACE, even though it cached a surface" \
+       "cmux calls: $(cat "$LOGM" 2>/dev/null || echo NONE)"
+fi
+if ! grep -q "close-surface" "$LOGM" 2>/dev/null; then
+  pass "…closing no surface: cmux refuses the last one in a workspace, so the tab would survive"
+else
+  fail "…closing no surface" "cmux calls: $(cat "$LOGM")"
+fi
+rm -rf "$HM" "$CDM" "$SDM"
+
+# --- A close cmux REFUSES is recorded, not swallowed -------------------------
+CL=$(setup_cleanup_call side)
+HN=${CL%%|*}; rN=${CL#*|}; CDN=${rN%%|*}; rNb=${rN#*|}; SDN=${rNb%%|*}; LOGN=${rNb#*|}
+set +e
+OUTN=$(HOME="$HN" PATH="$SDN:$PATH" CMUX_REFUSE_CLOSE=1 \
+  bash "$DIAL_SCRIPTS/wait-for-response.sh" "$CDN" --timeout 20 --submit-deadline 6 \
+  2>"$CDN/stderr.txt")
+RCN=$?
+set -e
+# The CALL succeeded — the response was captured. Only the cleanup failed, so the
+# exit code must not move; what changes is that the failure is visible at all.
+if [[ $RCN -eq 0 && "$(printf '%s' "$OUTN" | jq -r .response 2>/dev/null)" == *"all done"* ]]; then
+  pass "a refused close does not fail the call: the response was still captured"
+else
+  fail "a refused close does not fail the call" "rc=$RCN out=$OUTN"
+fi
+if [[ "$(printf '%s' "$OUTN" | jq -r '.cleanup_error // empty' 2>/dev/null)" == *"Surface not found"* ]]; then
+  pass "…and the refusal rides out on the response JSON, which is what an agent reads"
+else
+  fail "…and the refusal rides out on the response JSON" "out=$OUTN"
+fi
+if grep -q "Surface not found" "$CDN/cleanup_err.txt" 2>/dev/null; then
+  pass "…and lands in cleanup_err.txt for whoever goes looking in the call dir"
+else
+  fail "…and lands in cleanup_err.txt" "$(cat "$CDN/cleanup_err.txt" 2>/dev/null || echo NONE)"
+fi
+if grep -q "Surface not found" "$CDN/stderr.txt" 2>/dev/null; then
+  pass "…and on stderr, leaving stdout pure JSON"
+else
+  fail "…and on stderr, leaving stdout pure JSON" "$(cat "$CDN/stderr.txt" 2>/dev/null || echo NONE)"
+fi
+rm -rf "$HN" "$CDN" "$SDN"
+
 # ---- summary ---------------------------------------------------------------
 
 echo ""

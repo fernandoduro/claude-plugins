@@ -44,8 +44,11 @@ CALLER_SESSION=$(cat "$CALL_DIR/caller_session.txt")
 # instead of launching a second one. The cache's `surface_ref` key has always
 # documented itself as an opaque handle, and that is what makes one field serve two
 # transports:
-#   cmux  — surface_ref.txt, present only for visible surface placements
-#           (side-by-side / --window) and absent for headless / detached calls.
+#   cmux  — surface_ref.txt, present for every placement whose surface could be
+#           resolved, DETACHED included: a detached callee lives in one surface
+#           inside its own workspace tab, and until that handle was recorded here
+#           every follow-up into it opened another tab (claude-plugins-zaus).
+#           Absent for headless calls, and for a cmux launch whose tree read failed.
 #   herdr — herdr_agent.txt, the agent NAME, which is what `agent prompt` /
 #           `agent wait` / `agent get` address and what survives a disconnect.
 # Only one is ever present: the launchers write one file each, keyed by transport.

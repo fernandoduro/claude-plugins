@@ -99,6 +99,10 @@ PICKUP_SCRIPTS="$HOTLINE_ROOT/skills/pickup/scripts"
 # needs it to find the surface inside a workspace-addressed call.
 # shellcheck source=../../../scripts/repl-state.sh
 source "$PLUGIN_SCRIPTS/repl-state.sh"
+# The call dir's routing signals, so the placement this dial actually landed on is
+# read from the same function the two waiters read it with.
+# shellcheck source=../../../scripts/transport.sh
+source "$PLUGIN_SCRIPTS/transport.sh"
 # The ssh hop, for the ONE thing dial.sh has to ask the remote box itself: whether
 # the --remote target names a directory over there, and what its realpath is. Every
 # other remote question belongs to a sub-script.
@@ -1172,8 +1176,11 @@ DELIVERY_RETRIED=""
 # ---------------------------------------------------------------------------
 if ! $FIRST_CONTACT && [[ "$TRANSPORT" == "cmux" ]]; then
   if [[ -z "$SURFACE_REF" ]]; then
-    # Headless/detached first contact leaves no surface to reuse, and a prior
-    # follow-up may have cleared a stale one.
+    # A headless first contact leaves no surface to reuse, and a prior follow-up
+    # may have cleared a stale one. A DETACHED first contact used to land here too,
+    # which is how every follow-up into a detached callee opened another tab; it
+    # now records the surface inside its workspace, so it reaches the reuse attempt
+    # below (claude-plugins-zaus).
     add_fallback "surface-reuse-skipped(no-cached-surface)"
   else
     # Always the file, never --prompt: a work order handed over on argv is
@@ -1479,12 +1486,20 @@ if [[ -z "$CALL_DIR" ]]; then
 fi
 
 # cmux-call-async.sh degrades side-by-side to a detached workspace when the
-# caller's own surface context can't be resolved. It signals that structurally:
-# workspace_ref.txt instead of surface_ref.txt.
-if [[ "$TRANSPORT" == "cmux" && "$PLACEMENT" == "side" \
-      && -f "$CALL_DIR/workspace_ref.txt" && ! -f "$CALL_DIR/surface_ref.txt" ]]; then
-  add_fallback "surface-context→detached"
-  PLACEMENT_EFFECTIVE="detached"
+# caller's own surface context can't be resolved, and says so in degraded.txt.
+#
+# AN EXPLICIT MARKER, not the shape of the call dir. This used to read
+# `workspace_ref.txt && ! surface_ref.txt`, which made "no surface handle" mean
+# both "this degraded" and "there is nothing for a follow-up to re-address" — so a
+# detached callee could not record its surface without silencing this fallback
+# (claude-plugins-zaus). The placement comes from placement.txt for the same
+# reason, through the same reader the waiters use.
+if [[ "$TRANSPORT" == "cmux" && -s "$CALL_DIR/degraded.txt" ]]; then
+  add_fallback "$(tr -d '\n' < "$CALL_DIR/degraded.txt")"
+fi
+if [[ "$TRANSPORT" == "cmux" ]]; then
+  CALL_PLACEMENT=$(call_dir_placement "$CALL_DIR") || CALL_PLACEMENT=""
+  [[ -n "$CALL_PLACEMENT" ]] && PLACEMENT_EFFECTIVE="$CALL_PLACEMENT"
 fi
 [[ "$TRANSPORT" == "headless" ]] && PLACEMENT_EFFECTIVE="none"
 # herdr hosts the callee in a pane split off the caller's own, and that is the SAME
@@ -1592,10 +1607,11 @@ if [[ "$TRANSPORT" == "cmux" && -s "$CALL_DIR/pending_paste.md" ]]; then
   DELIVER_SURFACE=""
   DELIVER_WORKSPACE=""
   if [[ -z "$SURFACE_REF" ]]; then
-    # Detached placement addresses a workspace, not a surface. Resolve the
-    # workspace's current surface so the paste has a target — through the shared
-    # reader in repl-state.sh, which is also what cmux-paste.sh uses, so there is
-    # one implementation of "read the cmux tree" rather than three.
+    # No surface handle: a detached launch whose tree read failed, or a legacy
+    # call dir from before the detached path recorded one. Resolve the workspace's
+    # current surface so the paste has a target — through the shared reader in
+    # repl-state.sh, which is also what cmux-paste.sh uses, so there is one
+    # implementation of "read the cmux tree" rather than three.
     DELIVER_ADDR=$(cmux_workspace_current_surface "$(cat "$CALL_DIR/workspace_ref.txt" 2>/dev/null)")
     if [[ $? -eq 0 ]]; then
       DELIVER_WORKSPACE="${DELIVER_ADDR%% *}"
@@ -1603,6 +1619,10 @@ if [[ "$TRANSPORT" == "cmux" && -s "$CALL_DIR/pending_paste.md" ]]; then
     fi
   else
     DELIVER_SURFACE="$SURFACE_REF"
+    # The launcher already walked the tree for a detached call, so its answer is
+    # handed straight to the paste instead of being re-derived. Surface placements
+    # write no workspace_id.txt and cmux-paste.sh resolves it itself.
+    [[ -s "$CALL_DIR/workspace_id.txt" ]] && DELIVER_WORKSPACE=$(cat "$CALL_DIR/workspace_id.txt")
   fi
   if [[ -z "$DELIVER_SURFACE" ]]; then
     emit_error deliver "the callee's REPL booted but no surface could be resolved to paste the prompt into" \

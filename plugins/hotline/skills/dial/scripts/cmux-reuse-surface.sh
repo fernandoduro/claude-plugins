@@ -271,8 +271,18 @@ fi
 # and wipe every call dir instead of littering /tmp (claude-plugins-cjgn).
 CALL_DIR=$(mktemp -d "${HOTLINE_CALL_HOME:-/tmp}/hotline-call-XXXXX")
 # Which backend owns this call dir — a follow-up reuses a live cmux surface, so
-# it is a cmux call dir like any other. Coarse selector; surface_ref.txt below
-# still names the sub-mode. See wait-for-session.sh's dispatch block.
+# it is a cmux call dir like any other. Coarse selector; the sub-mode comes from
+# the placement. See wait-for-session.sh's dispatch block.
+#
+# NO placement.txt, deliberately, and it is inert either way: this script cannot
+# know which placement HOSTS the surface it was handed (it gets a bare handle, and
+# the session cache records no placement), and KEEP_WORKSPACE is unconditionally
+# true here — a reused surface is one the caller is mid-conversation in, so the
+# response wait returns early and closes nothing at all. Readers that ask anyway
+# get 'side' from call_dir_placement's legacy inference, off surface_ref.txt.
+# If KEEP_WORKSPACE ever becomes false here, this needs a real value first:
+# closing a DETACHED callee's only surface is the one thing cmux refuses
+# (claude-plugins-zaus).
 echo cmux > "$CALL_DIR/transport.txt"
 echo "$SURFACE_REF" > "$CALL_DIR/surface_ref.txt"
 echo "$KEEP_WORKSPACE" > "$CALL_DIR/keep_workspace.txt"

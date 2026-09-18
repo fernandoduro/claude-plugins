@@ -14,8 +14,9 @@
 #      it is there for every reader even when the launcher dies before placing a
 #      host.
 #   2. The wait scripts read it FIRST, and it is COARSE. It picks cmux vs
-#      headless; the cmux sub-mode (poll a SURFACE vs poll a WORKSPACE) is still
-#      surface_ref.txt vs workspace_ref.txt, exactly as before.
+#      headless; the cmux sub-mode (poll a SURFACE vs poll a WORKSPACE) comes from
+#      placement.txt, its sibling signal — which a legacy dir without one still
+#      infers from surface_ref.txt vs workspace_ref.txt, exactly as before.
 #   3. An ABSENT transport.txt behaves exactly as it did before the signal
 #      existed. Legacy call dirs — and hand-staged ones, of which this repo's own
 #      suites have many — must dispatch on file presence, unchanged.
@@ -798,6 +799,67 @@ else
        "rc=$rc stdout=$out stderr=$(cat "$case_dir/err.txt") cmux calls: $(cat "$case_dir/cmux.log" 2>/dev/null || echo NONE)"
 fi
 
+
+# ---------------------------------------------------------------------------
+# 6. placement.txt — transport.txt's sibling signal, and the same shape.
+#
+# The cmux sub-mode used to be read off which handle file existed, so one absence
+# meant two things: "there is no surface to re-address" AND "this is a detached
+# call, close its workspace". A detached callee therefore could not record the
+# surface a follow-up needs without being closed by the wrong verb
+# (claude-plugins-zaus). placement.txt states it, with the same legacy fallback
+# transport.txt has, so hand-staged and pre-existing call dirs keep dispatching
+# exactly as they did.
+# ---------------------------------------------------------------------------
+echo ""
+echo "6. placement.txt names the cmux sub-mode, with the legacy inference intact:"
+
+# shellcheck source=../scripts/transport.sh
+source "$HOTLINE_DIR/scripts/transport.sh"
+
+pl_dir="$ROOT/placement"
+mkdir -p "$pl_dir"
+
+pl_case() {  # pl_case <name> <expected> <files…>  (each file as name=content)
+  local name="$1" expect="$2"; shift 2
+  local d f got rc
+  d=$(mktemp -d "$pl_dir/case-XXXXX")
+  for f in "$@"; do printf '%s' "${f#*=}" > "$d/${f%%=*}"; done
+  got=$(call_dir_placement "$d"); rc=$?
+  if [[ "$got" == "$expect" && ( "$expect" != "" || $rc -ne 0 ) ]]; then
+    pass "$name"
+  else
+    fail "$name" "expected '$expect' (rc!=0 when empty), got '$got' rc=$rc"
+  fi
+}
+
+pl_case "placement.txt=side is read verbatim" side "placement.txt=side"
+pl_case "placement.txt=detached is read verbatim" detached "placement.txt=detached"
+pl_case "placement.txt=window is read verbatim" window "placement.txt=window"
+
+# THE ONE THAT MATTERS: a detached call carries BOTH handles now, and the marker
+# is what stops the surface handle being read as a surface placement.
+pl_case "a detached dir carrying both handles is still detached" detached \
+  "placement.txt=detached" "workspace_ref.txt=workspace:9" \
+  "surface_ref.txt=11111111-2222-4333-8444-555555555555"
+
+# Legacy dirs — no placement.txt — infer from the handles exactly as before.
+pl_case "legacy: surface_ref.txt alone infers side" side \
+  "surface_ref.txt=surface:1"
+pl_case "legacy: workspace_ref.txt alone infers detached" detached \
+  "workspace_ref.txt=workspace:1"
+pl_case "legacy: surface_ref.txt wins when a stale dir holds both" side \
+  "surface_ref.txt=surface:1" "workspace_ref.txt=workspace:1"
+
+# A value the contract does not name is not a third placement — it falls back to
+# the inference rather than being passed through to a `case` that would then match
+# nothing and silently pick workspace mode.
+pl_case "an unrecognised placement.txt falls back to the handle inference" side \
+  "placement.txt=sidecar" "surface_ref.txt=surface:1"
+
+# Nothing at all: no cmux host here. The waiters take the file-watch path, which
+# is what reports a launcher's own error.txt instead of a failed ref read.
+pl_case "no marker and no handle names no placement (rc 1)" "" "transport.txt=cmux"
 # ---------------------------------------------------------------------------
 echo ""
 echo "Result: $PASS passed, $FAIL failed, $SKIP skipped"

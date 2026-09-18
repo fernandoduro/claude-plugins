@@ -863,8 +863,9 @@ check "the headless fold-in still applies on a follow-up" $? \
 check "a headless follow-up CLEARS the stale surface_ref" $? "$(cat "$cache_6c" 2>/dev/null)"
 
 # Side placement degrading to detached: open-side-surface exits 2 with the
-# identify diagnostic cmux-call-async.sh keys on, so no surface_ref.txt is ever
-# written and the call lands in its own workspace instead.
+# identify diagnostic cmux-call-async.sh keys on, so the call lands in its own
+# workspace instead — and records degraded.txt, which is what dial.sh reads to
+# report the fallback now that the absence of a surface handle no longer means it.
 t=$(new_env); note_leak "$t"
 make_cmux "$t/bin"; make_claude "$t/bin"
 # Same two-readers screen as case 6: cmux-reuse-surface.sh sees the post-interrupt
@@ -897,9 +898,19 @@ cache_6d="$t/home/.agents-hotline/sessions/caller-6d.json"
 check "side placement degrades to detached and says so" $? \
   "out=$out stderr=$(cat "$t/err.txt")"
 
-[[ "$(jq -r --arg t "$target_real" '.connections[$t] | has("surface_ref")' "$cache_6d")" == "false" ]]
-check "a degraded-to-detached follow-up CLEARS the stale surface_ref" $? \
+# A DEGRADED-TO-DETACHED FOLLOW-UP RE-KEYS THE CACHE, it no longer clears it.
+# Case 6c's rule is unchanged and is the reason this one reads the way it does: a
+# follow-up must never leave the cache pointing at a surface this session has left
+# (claude-plugins-2caw). What changed is that a detached callee HAS a surface —
+# the one inside the workspace it just opened — so the honest value is that handle,
+# not nothing. Clearing it was what made the next follow-up open a third tab
+# (claude-plugins-zaus).
+[[ "$(jq -r --arg t "$target_real" '.connections[$t].surface_ref' "$cache_6d")" == "SURFACE-UUID-DETACHED" ]]
+check "a degraded-to-detached follow-up re-keys the cache to the detached surface" $? \
   "$(cat "$cache_6d" 2>/dev/null)"
+
+[[ "$(jq -r .surface_ref <<<"$out")" == "SURFACE-UUID-DETACHED" ]]
+check "…and reports that handle, so the caller can see which surface hosts it" $? "out=$out"
 
 # The OTHER shape of the same failure: the caller's context resolved fine, but
 # cmux then refused the target with `not_found` — open-side-surface exits 1, not
@@ -931,6 +942,87 @@ call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
   && jq -e '.fallbacks | index("surface-context→detached")' <<<"$out" >/dev/null 2>&1
 check "a not_found from open-side-surface degrades to detached, not a boot error" $? \
   "out=$out stderr=$(cat "$t/err.txt")"
+
+# ===========================================================================
+# 6d2. A DETACHED callee is reusable (claude-plugins-zaus).
+#
+# A detached placement puts the callee in its own workspace tab, and the launcher
+# used to record only that workspace. So the session cache held no surface, every
+# follow-up recorded `surface-reuse-skipped(no-cached-surface)`, and a
+# conversation of N turns opened N tabs — the callee mid-exchange in the first one
+# and nobody ever speaking to it again.
+#
+# The launcher now resolves the surface inside that workspace and records its
+# UUID, so a follow-up re-addresses the tab the callee is actually living in.
+# Which host the WAITERS poll and close is decided by placement.txt instead, so
+# the detached tab still auto-closes on completion (see wait-for-response_test.sh).
+# ===========================================================================
+t=$(new_env); note_leak "$t"
+make_cmux "$t/bin"
+# A REPL banner for the boot wait, and an idle input box so the first contact's
+# paste has somewhere to land.
+printf 'some earlier output\n\xe2\x9d\xaf\xc2\xa0\nClaude Code v2.1.221\n' > "$t/screen.txt"
+out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
+  HOTLINE_CALLER_SESSION_ID="caller-6d3" HOTLINE_PENDING_DIR="$t/pending" \
+  bash "$DIAL" --target "$t/target" --mode work_order --placement detached \
+    --label "probe label" --prompt "first contact, detached" --boot-timeout 8 2>"$t/err.txt")
+call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+[[ -n "$call_dir" ]] && note_leak "$call_dir"
+launch_script_of "$call_dir" >/dev/null
+target_real=$(cd "$t/target" && pwd -P)
+cache_6d3="$t/home/.agents-hotline/sessions/caller-6d3.json"
+
+[[ "$(jq -r .placement <<<"$out")" == "detached" \
+   && "$(jq -r .first_contact <<<"$out")" == "true" \
+   && "$(jq -r .status <<<"$out")" == "connected" ]]
+check "a detached first contact connects and reports placement detached" $? \
+  "out=$out stderr=$(cat "$t/err.txt")"
+
+# THE UUID, not the positional surface:900 the same tree entry carries. A ref names
+# whatever sits in slot N, and slots renumber between now and the follow-up that
+# reads this.
+[[ "$(cat "$call_dir/surface_ref.txt" 2>/dev/null)" == "SURFACE-UUID-DETACHED" ]]
+check "a detached first contact records the surface inside its workspace, by UUID" $? \
+  "surface_ref=$(cat "$call_dir/surface_ref.txt" 2>/dev/null || echo NONE)"
+
+[[ "$(cat "$call_dir/placement.txt" 2>/dev/null)" == "detached" \
+   && "$(cat "$call_dir/workspace_ref.txt" 2>/dev/null)" == "workspace:123" \
+   && "$(cat "$call_dir/workspace_id.txt" 2>/dev/null)" == "WORKSPACE-UUID-DETACHED" ]]
+check "…alongside placement.txt=detached and the workspace as a UUID" $? \
+  "placement=$(cat "$call_dir/placement.txt" 2>/dev/null) ws=$(cat "$call_dir/workspace_ref.txt" 2>/dev/null) wsid=$(cat "$call_dir/workspace_id.txt" 2>/dev/null)"
+
+[[ "$(jq -r --arg t "$target_real" '.connections[$t].surface_ref' "$cache_6d3")" == "SURFACE-UUID-DETACHED" ]]
+check "…and the session cache learns it, which is what a follow-up reads" $? \
+  "$(cat "$cache_6d3" 2>/dev/null)"
+
+# The follow-up: same target, cached session, live idle REPL in that surface. It
+# must REUSE the tab rather than record the skip and open another one.
+ws_before=$(grep -c 'new-workspace' "$t/cmux_calls" 2>/dev/null || echo 0)
+out2=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
+  HOTLINE_CALLER_SESSION_ID="caller-6d3" HOTLINE_PENDING_DIR="$t/pending" \
+  bash "$DIAL" --target "$t/target" --mode work_order --placement detached \
+    --label "probe label" --prompt "and now step 2" --boot-timeout 8 2>"$t/err2.txt")
+call_dir2=$(jq -r '.call_dir // empty' <<<"$out2" 2>/dev/null)
+[[ -n "$call_dir2" ]] && note_leak "$call_dir2"
+ws_after=$(grep -c 'new-workspace' "$t/cmux_calls" 2>/dev/null || echo 0)
+
+[[ "$(jq -r .first_contact <<<"$out2")" == "false" \
+   && "$(jq -r .status <<<"$out2")" == "connected" ]] \
+  && ! jq -e '.fallbacks | index("surface-reuse-skipped(no-cached-surface)")' <<<"$out2" >/dev/null 2>&1
+check "a follow-up into a live detached callee does NOT record no-cached-surface" $? \
+  "out2=$out2 stderr=$(cat "$t/err2.txt")"
+
+[[ "$(jq -r '.fallbacks | length' <<<"$out2")" == "0" ]]
+check "…it reuses the tab outright, with no fallback at all" $? "out2=$out2"
+
+[[ "$ws_before" == "$ws_after" ]]
+check "…and opens no second workspace (new-workspace count unchanged)" $? \
+  "before=$ws_before after=$ws_after calls=$(cat "$t/cmux_calls" 2>/dev/null)"
+
+# Placement is irrelevant once reuse succeeds: the callee is mid-conversation in
+# that tab, and the reuse step runs before any placement decision.
+[[ "$(jq -r .surface_ref <<<"$out2")" == "SURFACE-UUID-DETACHED" ]]
+check "…re-addressing the same surface the first contact recorded" $? "out2=$out2"
 
 # ===========================================================================
 # 6e. A follow-up that opens a NEW surface closes the one it superseded

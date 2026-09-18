@@ -794,3 +794,49 @@ cmux_workspace_current_surface() {
   [[ -z "$addr" || "$addr" == *null* ]] && return 4
   printf '%s' "$addr"
 }
+
+# --- Closing a surface: the container is not optional ------------------------
+# cmux_close_surface_scoped <what> <surface-handle>
+#
+# `cmux close-surface` resolves --surface INSIDE a workspace context that defaults
+# to the caller's inherited $CMUX_WORKSPACE_ID, so a surface UUID that read-screen
+# reads happily in the same breath still fails "Surface not found: <uuid>" without
+# --workspace (verified live, cmux 0.64.20). Three cleanup sites passed --surface
+# alone under `|| true`, so every one of them silently no-op'd and leaked the
+# surface it meant to reap (claude-plugins-5k43).
+#
+# The workspace comes off the tree rather than from a stored value, via
+# cmux_surface_address: that resolves a positional `surface:N` ref as well as a
+# UUID (an orphan parsed out of an opener's stderr is positional), and it answers
+# with BOTH ids as UUIDs, which is what keeps the call pointed at the same thing
+# after refs renumber.
+#
+# The echoed `OK surface:<ref> workspace:<n>` names the NEWLY SELECTED surface,
+# not the one closed, so it is no confirmation of anything and is discarded.
+#
+#   0 — closed
+#   1 — the surface's workspace could not be resolved (tree unreadable, or the
+#       surface is already gone); diagnostic in $CMUX_CLOSE_ERR
+#   2 — cmux refused the close; diagnostic in $CMUX_CLOSE_ERR
+#
+# CMUX_CLOSE_ERR is published rather than printed so a caller can route it into
+# the call dir instead of a swallowed stderr — a cleanup failure that only exists
+# as a discarded stream is the failure mode this replaces.
+CMUX_CLOSE_ERR=""
+cmux_close_surface_scoped() {
+  local what="$1" handle="${2:-}" addr ws surf out
+  CMUX_CLOSE_ERR=""
+  cmux_handle_ok "$what" "$handle" || { CMUX_CLOSE_ERR="empty surface handle"; return 1; }
+  addr=$(cmux_surface_address "$handle")
+  case $? in
+    0) ;;
+    3) CMUX_CLOSE_ERR="could not read the cmux tree to resolve surface $handle's workspace"; return 1 ;;
+    *) CMUX_CLOSE_ERR="surface $handle is not in the cmux tree, so its workspace is unknown"; return 1 ;;
+  esac
+  ws="${addr%% *}"; surf="${addr##* }"
+  if ! out=$(cmux close-surface --workspace "$ws" --surface "$surf" 2>&1); then
+    CMUX_CLOSE_ERR="cmux close-surface --workspace $ws --surface $surf refused: $(printf '%s' "$out" | tr '\n\r\t' '   ' | cut -c1-140)"
+    return 2
+  fi
+  return 0
+}

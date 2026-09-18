@@ -351,6 +351,14 @@ ST="${CMUX_FAKE_STATE:?}"
 case "$1" in
   send) echo "$*" >> "$ST/send_calls" ;;
   read-screen) cat "$ST/screen.txt" 2>/dev/null ;;
+  # Closing a surface needs --workspace as well as --surface, and only the tree
+  # knows which workspace — so a stub that records close calls has to answer
+  # `tree` too, or the close never gets as far as being recorded.
+  # CMUX_FAKE_NO_TREE models a cmux whose tree cannot be read.
+  tree)  [[ -n "${CMUX_FAKE_NO_TREE:-}" ]] && exit 1
+         jq -nc '{windows:[{workspaces:[{id:"WORKSPACE-UUID-5",ref:"workspace:5",
+           panes:[{selected_surface_id:"SURFACE-UUID-777",
+                   surfaces:[{id:"SURFACE-UUID-777",ref:"surface:777"}]}]}]}]}' ;;
   close-surface) echo "$*" >> "$ST/close_calls" ;;
   *) exit 0 ;;
 esac
@@ -599,6 +607,103 @@ if [[ -z "$fb" && -n "$call_dir" && -f "$call_dir/workspace_ref.txt" ]]; then
 else
   fail "--detached proceeds on cmux even with no opener" "fb=$fb call_dir=$call_dir"
 fi
+# This stub answers no `tree`, so the surface inside the new workspace cannot be
+# resolved — which must cost the call NOTHING beyond a follow-up's reuse. The
+# workspace and its PTY are already up; failing the dial over an unreadable tree
+# would turn a degraded follow-up into a dead call (claude-plugins-zaus).
+if [[ -n "$call_dir" && ! -f "$call_dir/error.txt" && ! -f "$call_dir/surface_ref.txt" ]]; then
+  pass "…and an unresolvable surface leaves the call intact, just without a reuse handle"
+else
+  fail "…and an unresolvable surface leaves the call intact, just without a reuse handle" \
+       "error=$(cat "$call_dir/error.txt" 2>/dev/null) surface=$(cat "$call_dir/surface_ref.txt" 2>/dev/null)"
+fi
+if grep -q "could not resolve the surface inside detached workspace workspace:321" \
+     "$call_dir/surface_err.txt" 2>/dev/null; then
+  pass "…saying so in surface_err.txt rather than silently"
+else
+  fail "…saying so in surface_err.txt rather than silently" \
+       "surface_err=$(cat "$call_dir/surface_err.txt" 2>/dev/null || echo NONE)"
+fi
+[[ -f "$call_dir/launch_script.txt" ]] && rm -f "$(cat "$call_dir/launch_script.txt")"
+rm -rf "$tmp" "$call_dir"
+
+# ---------------------------------------------------------------------------
+# --detached records the surface its callee actually lives in (claude-plugins-zaus).
+#
+# A detached placement opens a workspace tab holding exactly one surface, and the
+# launcher used to record only the workspace. So the session cache learned no
+# surface, and every follow-up reported `surface-reuse-skipped(no-cached-surface)`
+# and opened another tab with the callee still mid-conversation in the first.
+#
+# Resolved AFTER `new-workspace` returns and taken as a UUID, never as the
+# positional `surface:N` the same tree entry carries: a ref names whatever sits in
+# slot N, and slots renumber before the follow-up that reads this handle.
+# ---------------------------------------------------------------------------
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-cmux-test-XXXXXX)
+mkdir -p "$tmp/bin" "$tmp/cwd"
+: > "$tmp/screen.txt"
+cat > "$tmp/bin/cmux" <<'EOF'
+#!/usr/bin/env bash
+ST="${CMUX_FAKE_STATE:?}"
+case "$1" in
+  new-workspace) echo "$*" >> "$ST/ws_calls"; echo "OK workspace:321" ;;
+  read-screen)   cat "$ST/screen.txt" 2>/dev/null; echo "$ " ;;
+  send)
+    echo "$*" >> "$ST/send_calls"
+    m=$(printf '%s' "$*" | grep -oE '__HOTLINE_PTYREADY_[0-9]+__' | head -1)
+    if [[ -n "$m" ]]; then { echo "$m"; echo "$m"; } >> "$ST/screen.txt"; fi
+    ;;
+  tree)          echo "$*" >> "$ST/tree_calls"
+                 jq -nc '{windows:[{workspaces:[{id:"WORKSPACE-UUID-321",ref:"workspace:321",
+                   panes:[{selected_surface_id:"SURFACE-UUID-321",
+                           surfaces:[{id:"SURFACE-UUID-321",ref:"surface:901"}]}]}]}]}' ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$tmp/bin/cmux"
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" \
+  bash "$SCRIPT_UNDER_TEST" --detached --cwd "$tmp/cwd" --label "probe" --prompt "hello" \
+  2>"$tmp/stderr.txt")
+call_dir=$(printf '%s' "$out" | jq -r '.call_dir // empty' 2>/dev/null)
+if [[ "$(cat "$call_dir/surface_ref.txt" 2>/dev/null)" == "SURFACE-UUID-321" ]]; then
+  pass "--detached records the surface inside its new workspace, by UUID"
+else
+  fail "--detached records the surface inside its new workspace, by UUID" \
+       "got: $(cat "$call_dir/surface_ref.txt" 2>/dev/null || echo NONE)"
+fi
+if [[ "$(cat "$call_dir/workspace_id.txt" 2>/dev/null)" == "WORKSPACE-UUID-321" \
+   && "$(cat "$call_dir/workspace_ref.txt" 2>/dev/null)" == "workspace:321" ]]; then
+  pass "…and the workspace both ways: the ref it sends to, the UUID a close scopes with"
+else
+  fail "…and the workspace both ways: the ref it sends to, the UUID a close scopes with" \
+       "ref=$(cat "$call_dir/workspace_ref.txt" 2>/dev/null) id=$(cat "$call_dir/workspace_id.txt" 2>/dev/null)"
+fi
+# placement.txt is what keeps the waiters polling and CLOSING the workspace: a
+# detached tab auto-closes on completion, and cmux cannot close the last surface
+# in a workspace, so inferring surface mode from the handle above would leave the
+# tab open forever.
+if [[ "$(cat "$call_dir/placement.txt" 2>/dev/null)" == "detached" ]]; then
+  pass "…and placement.txt still names this a DETACHED call"
+else
+  fail "…and placement.txt still names this a DETACHED call" \
+       "got: $(cat "$call_dir/placement.txt" 2>/dev/null || echo NONE)"
+fi
+# --id-format both or every `.id` comes back null, and the handle above is then
+# unwritable — the guard in docs/compounding.md's pin-the-container entry.
+if grep -q -- '--id-format both' "$tmp/tree_calls" 2>/dev/null; then
+  pass "…enumerating with --id-format both, without which every .id is null"
+else
+  fail "…enumerating with --id-format both, without which every .id is null" \
+       "tree_calls=$(cat "$tmp/tree_calls" 2>/dev/null || echo NONE)"
+fi
+# The launch still goes to the WORKSPACE, not the surface: the workspace ref is
+# the send target the detached path has always used and the one the boot wait polls.
+if grep -q "send --workspace workspace:321 bash /tmp/hotline-launch" "$tmp/send_calls" 2>/dev/null; then
+  pass "…and the launch command still addresses the workspace"
+else
+  fail "…and the launch command still addresses the workspace" \
+       "send_calls=$(cat "$tmp/send_calls" 2>/dev/null)"
+fi
 [[ -f "$call_dir/launch_script.txt" ]] && rm -f "$(cat "$call_dir/launch_script.txt")"
 rm -rf "$tmp" "$call_dir"
 
@@ -627,15 +732,59 @@ else
   fail "side-by-side readiness timeout writes the async error contract" \
        "call_dir=$call_dir stderr=$(cat "$tmp/stderr.txt")"
 fi
-if grep -q "close-surface --surface surface:777" "$tmp/close_calls" 2>/dev/null; then
-  pass "side-by-side readiness timeout closes the orphan surface parsed from stderr"
+# THE CONTAINER IS NOT OPTIONAL: `cmux close-surface --surface <handle>` resolves
+# inside the caller's inherited workspace context and answers "Surface not found"
+# out of it, so the close that only ever passed --surface silently no-op'd and
+# leaked the surface it meant to reap (claude-plugins-5k43). Both halves are the
+# UUIDs the tree reported — the positional surface:777 out of the opener's stderr
+# is only what starts the lookup.
+if grep -q "close-surface --workspace WORKSPACE-UUID-5 --surface SURFACE-UUID-777" \
+     "$tmp/close_calls" 2>/dev/null; then
+  pass "side-by-side readiness timeout closes the orphan surface scoped to its workspace"
 else
-  fail "side-by-side readiness timeout closes the orphan surface" \
+  fail "side-by-side readiness timeout closes the orphan surface scoped to its workspace" \
        "close_calls=$(cat "$tmp/close_calls" 2>/dev/null || echo NONE)"
 fi
-[[ -n "$call_dir" && ! -f "$call_dir/surface_ref.txt" ]] && \
-  pass "side-by-side readiness timeout does NOT signal surface-mode to the wait scripts" || \
-  fail "side-by-side readiness timeout does NOT signal surface-mode to the wait scripts"
+# The call FAILED before a placement was settled, so the dir names no cmux host at
+# all and the waiters take the file-watch path that reports the launcher's own
+# error.txt. placement.txt is what carries that now; surface_ref.txt used to.
+if [[ -n "$call_dir" && ! -f "$call_dir/placement.txt" && ! -f "$call_dir/surface_ref.txt" ]]; then
+  pass "side-by-side readiness timeout names no placement to the wait scripts"
+else
+  fail "side-by-side readiness timeout names no placement to the wait scripts" \
+       "placement=$(cat "$call_dir/placement.txt" 2>/dev/null || echo NONE)"
+fi
+rm -rf "$tmp" "$call_dir"
+
+# A close cmux REFUSES is recorded, not swallowed. Same fixture with an unreadable
+# tree: the workspace cannot be resolved, so the close cannot be made — and the
+# whole point of claude-plugins-5k43 is that this leaves a diagnostic behind.
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-cmux-test-XXXXXX)
+mkdir -p "$tmp/cwd"
+: > "$tmp/screen.txt"
+make_min_surface_cmux "$tmp/bin"
+cat > "$tmp/open-side.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "open-side-surface: --wait-ready timed out after 1s for surface:777 (pane:55)." >&2
+exit 3
+EOF
+chmod +x "$tmp/open-side.sh"
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" CMUX_FAKE_NO_TREE=1 \
+  HOTLINE_OPEN_SIDE_SURFACE="$tmp/open-side.sh" \
+  bash "$SCRIPT_UNDER_TEST" --cwd "$tmp/cwd" --prompt "hello" 2>"$tmp/stderr.txt")
+call_dir=$(printf '%s' "$out" | jq -r '.call_dir // empty')
+if grep -q "failed to close the orphan surface surface:777" "$call_dir/surface_err.txt" 2>/dev/null; then
+  pass "a close that cannot be scoped is RECORDED in surface_err.txt, not swallowed"
+else
+  fail "a close that cannot be scoped is RECORDED in surface_err.txt, not swallowed" \
+       "surface_err=$(cat "$call_dir/surface_err.txt" 2>/dev/null || echo NONE)"
+fi
+if [[ ! -s "$tmp/close_calls" ]]; then
+  pass "…and no unscoped close-surface was attempted as a fallback"
+else
+  fail "…and no unscoped close-surface was attempted as a fallback" \
+       "close_calls=$(cat "$tmp/close_calls")"
+fi
 rm -rf "$tmp" "$call_dir"
 
 # Caller-context resolution failure: cmux-cli's opener exits 2 because it can't
@@ -658,6 +807,12 @@ case "$1" in
     m=$(printf '%s' "$*" | grep -oE '__HOTLINE_PTYREADY_[0-9]+__' | head -1)
     if [[ -n "$m" ]]; then { echo "$m"; echo "$m"; } >> "$ST/screen.txt"; fi
     ;;
+  # The detached path resolves the surface inside the workspace it just opened,
+  # so the stub has to answer `tree` — with `.id` UUIDs, which cmux only reports
+  # under --id-format both.
+  tree)          jq -nc '{windows:[{workspaces:[{id:"WORKSPACE-UUID-456",ref:"workspace:456",
+                   panes:[{selected_surface_id:"SURFACE-UUID-456",
+                           surfaces:[{id:"SURFACE-UUID-456",ref:"surface:900"}]}]}]}]}' ;;
   close-surface) echo "$*" >> "$ST/close_calls" ;;
   *) exit 0 ;;
 esac
@@ -687,10 +842,30 @@ else
   fail "caller-resolution fallback lands in detached workspace" \
        "got: $(cat "$call_dir/workspace_ref.txt" 2>/dev/null)"
 fi
-if [[ -n "$call_dir" && ! -f "$call_dir/surface_ref.txt" ]]; then
-  pass "caller-resolution fallback does NOT write surface_ref.txt"
+# THE DEGRADE IS NAMED, not inferred from a missing file. dial.sh used to read
+# `workspace_ref.txt && ! surface_ref.txt` as the degrade signal, which meant a
+# detached callee could not record the surface a follow-up needs without silencing
+# the fallback (claude-plugins-zaus). degraded.txt carries it now, and
+# placement.txt says which host the waiters poll and close.
+if [[ -n "$call_dir" && "$(cat "$call_dir/degraded.txt" 2>/dev/null)" == "surface-context→detached" ]]; then
+  pass "caller-resolution fallback names the degrade in degraded.txt"
 else
-  fail "caller-resolution fallback does NOT write surface_ref.txt"
+  fail "caller-resolution fallback names the degrade in degraded.txt" \
+       "got: $(cat "$call_dir/degraded.txt" 2>/dev/null || echo NONE)"
+fi
+if [[ -n "$call_dir" && "$(cat "$call_dir/placement.txt" 2>/dev/null)" == "detached" ]]; then
+  pass "…and placement.txt reports the placement that HAPPENED, not the one asked for"
+else
+  fail "…and placement.txt reports the placement that HAPPENED, not the one asked for" \
+       "got: $(cat "$call_dir/placement.txt" 2>/dev/null || echo NONE)"
+fi
+# The degraded callee still gets a reusable handle: it is in a tab of its own, and
+# a follow-up that cannot find it opens yet another one.
+if [[ -n "$call_dir" && "$(cat "$call_dir/surface_ref.txt" 2>/dev/null)" == "SURFACE-UUID-456" ]]; then
+  pass "…and the degraded callee's surface is recorded by UUID for a follow-up to reuse"
+else
+  fail "…and the degraded callee's surface is recorded by UUID for a follow-up to reuse" \
+       "got: $(cat "$call_dir/surface_ref.txt" 2>/dev/null || echo NONE)"
 fi
 if grep -q "send --workspace workspace:456 bash /tmp/hotline-launch" "$tmp/send_calls" 2>/dev/null; then
   pass "caller-resolution fallback sends launch script to the detached workspace"
