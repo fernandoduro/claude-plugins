@@ -35,6 +35,12 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
 - **Write rules as if they had always been true.** "No longer", "used to",
   "previously" force readers to learn the history before the rule. Grep changed
   docs for those phrases before committing. (claude-plugins-zrq1)
+- **A published skill addresses whoever runs it, never a named person.** Every plugin
+  here installs onto someone else's machine, so a name or a `he`/`his` sends the agent
+  looking for a person who is not there — no-meat-proxy shipped to a public directory
+  naming one operator five times, and three more skills still do. `tests/skill-voice.test.mjs`
+  fails on any new one; say "the user" or "you", and they/them where a pronoun is
+  unavoidable. (claude-plugins-dw67, cc6a3a4)
 - **Pair every prohibition with its recovery action.** "Do NOT re-dial" without
   "read pending_paste.md, surface stage deliver" leaves the reader with nothing to
   do. (claude-plugins-zrq1)
