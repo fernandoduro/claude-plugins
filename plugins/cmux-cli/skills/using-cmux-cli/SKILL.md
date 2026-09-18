@@ -2,7 +2,7 @@
 name: using-cmux-cli
 description: "Drives cmux (macOS terminal multiplexer) via the `cmux` CLI — windows, workspaces, panes, tabs, sending keystrokes and reading terminal output, embedded browser, notifications, layouts."
 when_to_use: "Use when the user mentions cmux, workspaces, panes, surfaces, tabs, or splits; asks to send keystrokes to or read output from a terminal; wants to drive cmux's embedded browser; wants to post a notification into a workspace; or runs tmux-style commands (capture-pane, wait-for, swap-pane) where cmux is the multiplexer in play."
-argument-hint: "[describe what you want to do]"
+argument-hint: "[surface id/title, or describe what you want to do]"
 allowed-tools:
   - "Bash(cmux *)"
   - "Bash(which cmux)"
@@ -525,6 +525,8 @@ The script parses cmux's `OK surface:<n> pane:<p> workspace:<w>` output and repo
 ## Workflow: targeting another surface (find → read → send)
 
 One of the most common agent tasks: the user says *"read what's happening in the other tab"* or *"that workspace over there — send it this command."* You're running inside one surface (your own `CMUX_SURFACE_ID`) and need to act on a different one. The mechanics:
+
+**A bare identifier is a read request.** Invoked with only a surface UUID, `surface:N` ref, or tab title and no verb — resolve it, read its screen, and report back (title + workspace + a summary of what's on it). Don't stop to ask what to do with it; that's the default action. Only ask when the identifier can't be resolved. See Step 2 for the read command.
 
 ### Step 1 — Find the surface
 
