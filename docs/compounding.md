@@ -169,11 +169,13 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   `for` loop under zsh, which is one word, not a list. Give every scan a positive
   control it must hit before reading a zero as a result; for a symlinked directory
   that control is the trailing slash, `find /tmp/`. Capture any diff you grep with
-  `git --no-color` (or `-c color.ui=never`) and quote every `--include` glob — ANSI
-  escapes in the captured text and zsh's expansion of a bare glob each silence a
-  grep without failing it — and a `grep` that is really `ugrep` ignores `--include`
-  quoted or not, warning and then searching the whole tree.
-  (claude-plugins-qq9f, claude-plugins-vagi, 050619c)
+  `git diff --no-color` — the flag belongs AFTER the subcommand, and `-c color.ui=never`
+  does not suppress it on a machine whose `~/.gitconfig` sets `color.diff=always`, which
+  this one does — and quote every `--include` glob, since ANSI escapes in the captured
+  text and zsh's expansion of a bare glob each silence a grep without failing it. A
+  `grep` that is really `ugrep` ignores `--include` quoted or not, warning and then
+  searching the whole tree. (claude-plugins-qq9f, claude-plugins-vagi, 050619c,
+  claude-plugins-zaus)
 - **A fact handed to an implementer carries whether it was verified in the code or
   only in a doc.** A SKILL.md read as the authority produced "there is no
   character-limit flag anywhere in session tools" while `--max-chars` sat in
