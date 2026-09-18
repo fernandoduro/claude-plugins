@@ -409,3 +409,25 @@ test('explicit-only inventory has mirrored Codex policy and risk classification'
 	assert.equal(report.explicitOnly.length, 34);
 	assert.equal(report.codexExplicitOnly.length, 34);
 });
+
+test('explicit-only policy doc agrees with the auditor it summarizes', () => {
+	// The doc restates counts and one row per explicit-only skill in a column layout
+	// the auditor does not emit, so agreement is asserted rather than diffed.
+	const report = collectExplicitInvocationPolicy(REPO);
+	const doc = fs.readFileSync(path.join(REPO, 'docs/codex/explicit-only-invocation-policy.md'), 'utf8');
+	const stated = (label) => Number(doc.match(new RegExp(`^- ${label}: (\\d+)$`, 'm'))?.[1]);
+
+	assert.equal(stated('Explicit-only skills'), report.explicitOnly.length);
+	assert.equal(stated('Codex explicit-only policies'), report.codexExplicitOnly.length);
+
+	const tally = new Map();
+	for (const skill of report.explicitOnly) {
+		tally.set(skill.riskClass, (tally.get(skill.riskClass) || 0) + 1);
+	}
+	for (const [risk, count] of tally) assert.equal(stated(risk), count, risk);
+
+	const missing = report.explicitOnly
+		.map(skill => skill.key)
+		.filter(key => !doc.includes(`| \`${key}\` |`));
+	assert.deepEqual(missing, [], 'explicit-only skills absent from the doc table');
+});

@@ -218,9 +218,11 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
 - **Each constant has one source; docs point at it rather than restating it.** A
   box-wait "default 60" documented in two files was hardcoded 20 at both call
   sites. Where a doc must state a fact, a string canary asserts agreement — see
-  `newline-submit-docs_test.sh`, and `tests/inventory-counts.test.mjs` for the plugin
-  counts README and the compatibility guide quote from the catalogs.
-  (claude-plugins-xick, round 2 #6, f4c353e)
+  `newline-submit-docs_test.sh`, `tests/inventory-counts.test.mjs` for the plugin
+  counts README and the compatibility guide quote from the catalogs, and
+  `plugins/codex/tests/compatibility.test.mjs` for the explicit-only policy doc's
+  counts and per-skill rows against the auditor that derives them.
+  (claude-plugins-xick, round 2 #6, f4c353e, 6477176)
 - **A summary-line budget is not a detail budget.** `reason_of`'s 300-character cut
   belongs to a `fallbacks` line summarizing a call that SUCCEEDED, and reusing it for
   the `emit_error` detail severs the recovery half off refusals that run ~450
