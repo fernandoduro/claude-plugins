@@ -38,12 +38,12 @@ node scripts/audit-explicit-invocation-policy.mjs
 
 Current summary:
 
-- Explicit-only skills: 33
-- Codex explicit-only policies: 33
+- Explicit-only skills: 34
+- Codex explicit-only policies: 34
 - coordination-side-effect: 1
 - external-side-effect: 4
 - local-side-effect: 19
-- read-only-or-advisory: 9
+- read-only-or-advisory: 10
 
 | Skill | Side-effect risk | Policy |
 | --- | --- | --- |
@@ -78,6 +78,7 @@ Current summary:
 | `skill-tools:review-slash-command` | read-only-or-advisory | explicit-only in both harnesses |
 | `skill-tools:validate-dual-harness-skill` | read-only-or-advisory | explicit-only in both harnesses |
 | `slides-presentation:create-slides-presentation` | local-side-effect | explicit-only in both harnesses |
+| `thinking-tools:no-meat-proxy` | read-only-or-advisory | explicit-only in both harnesses |
 | `update-pr-description:update-pr-description` | external-side-effect | explicit-only in both harnesses |
 | `watch-pr-then-action:watch-pr-then-action` | external-side-effect | explicit-only in both harnesses |
 

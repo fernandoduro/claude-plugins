@@ -40,6 +40,7 @@ export const RISK_BY_SKILL = new Map([
 	['skill-tools:review-slash-command', ['read-only-or-advisory', 'Reviews command files and reports findings.']],
 	['skill-tools:validate-dual-harness-skill', ['read-only-or-advisory', 'Audits a skill contract and reports findings.']],
 	['slides-presentation:create-slides-presentation', ['local-side-effect', 'Creates a local HTML slide deck artifact.']],
+	['thinking-tools:no-meat-proxy', ['read-only-or-advisory', 'Rewrites draft text only; touches no files or external state.']],
 ]);
 
 function filesBelow(dir) {

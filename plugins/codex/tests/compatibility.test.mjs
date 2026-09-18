@@ -406,6 +406,6 @@ test('explicit-only inventory has mirrored Codex policy and risk classification'
 	// `session-tools:sessions-catch-up` is model-invocable (34f84cb) so
 	// `maestro:your-cue` can route to it itself. Update the number *and*
 	// regenerate docs/codex/explicit-only-invocation-policy.md when this changes.
-	assert.equal(report.explicitOnly.length, 33);
-	assert.equal(report.codexExplicitOnly.length, 33);
+	assert.equal(report.explicitOnly.length, 34);
+	assert.equal(report.codexExplicitOnly.length, 34);
 });

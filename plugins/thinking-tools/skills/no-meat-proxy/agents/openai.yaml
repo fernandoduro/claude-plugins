@@ -1,0 +1,5 @@
+interface:
+  display_name: No Meat Proxy
+  short_description: Rewrite a draft so the reader can relay it in their own words.
+policy:
+  allow_implicit_invocation: false
