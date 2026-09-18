@@ -7,13 +7,32 @@ The stage tells you which section below to read:
 
 | `.stage` | Section |
 |---|---|
-| `args` | (a malformed invocation — `.recovery` says which flag) |
+| `args` | [Argument Failures](#argument-failures-stage-args) — `.recovery` says which flag |
 | `identity` | [Identity Failures](#identity-failures) |
 | `resolve` | [Workspace Resolution Failures](#workspace-resolution-failures), [Identity Cache Issues](#identity-cache-issues) |
 | `transport` | [herdr Failures](#herdr-failures) — the backend the caller asked for cannot host this call. **Never a degradation**; `.recovery` names the fix. |
 | `fire` | [CMUX Failures](#cmux-failures), [Headless Call Failures](#headless-call-failures), [herdr Failures](#herdr-failures) |
 | `boot` | [CMUX Failures](#cmux-failures) — the callee's REPL never came up |
 | `deliver` | [Delivery](#delivery-stage-deliver-and-messages-that-appear-to-vanish) — the REPL came up but the message never landed in it. **A live pane is sitting empty; the prompt is still on disk. Do not re-dial blind.** |
+
+## Argument Failures (`stage: "args"`)
+
+Refused before anything with a side effect, so nothing was opened, sent, or
+cached — fix the argument and re-run the identical command.
+
+**`No --label provided (it is required on every dial)`**
+- Every callee's tab reads `hotline: <label> (<mode>)`, so a dial with no label
+  produces a callee that nothing distinguishes from every other one in the same
+  repo. The flag has no default.
+- This also fires on a label that is present but **empty or whitespace-only** —
+  `--label "$VAR"` with an unset `VAR` reaches the gate as a flag with no value.
+- It fires on **follow-ups too**. Whether a dial continues an existing
+  conversation comes out of the session cache, hundreds of lines after the
+  arguments are read, so the gate cannot exempt one. A follow-up still needs the
+  flag; it just ignores the value, and records nothing about having done so.
+- Recovery: pass `--label "<2-4 word slug of the task>"` — what the callee is
+  *doing*, not where it lives. `--label "review pr 2393"`, `--label "fix hotline
+  titles"`, `--label "audit the cache gate"`.
 
 ## Identity Failures
 
@@ -143,6 +162,7 @@ segment above.
 **`--window <name>` keeps creating new windows**
 - cmux windows are not directly name-addressable, so Hotline identifies a "named window" by a workspace titled `<name>` inside it. If that titled workspace was renamed or closed, the next `--window <name>` won't find it and will create a fresh window.
 - Recovery: pass the explicit `window:<n>` ref instead of a name when you need to target a specific existing window, or accept that the name reseeds a new window + titled workspace.
+- That title is an **addressing key, not decoration**, which is why nothing renames it: a windowed callee reads its label off its own session name, and a detached callee's workspace name is prefixed `hotline: ` so it cannot be mistaken for a `--window` target. Renaming that workspace by hand has the same effect as closing it — the next `--window <name>` stops resolving.
 
 ### Delivery: `stage: "deliver"` and messages that appear to vanish
 

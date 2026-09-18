@@ -272,6 +272,18 @@ herdr_resolve_split_pane() {
   return 0
 }
 
+# Lowercase, one dash per run of anything else, trimmed, then cut to a budget.
+# ONE definition for both names below: they differ only in how many characters they
+# can afford (14 for an agent name inside herdr's 32-character limit, 13 for a tab
+# label behind the 6-character nonce), and two copies of the same tr|tr -s|sed|cut
+# chain drift the moment one of them learns something the other does not.
+herdr_slugify() {  # herdr_slugify <text> <max-chars>
+  local slug
+  slug=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' \
+         | tr -s '-' | sed 's/^-*//; s/-*$//' | cut -c1-"${2:?budget required}")
+  printf '%s' "${slug:-call}"
+}
+
 # --- Naming the callee's agent -----------------------------------------------
 # The agent name IS the durable host handle for a herdr call: `agent prompt
 # <name>`, `agent wait <name>` and `agent get <name>` all address it, and it
@@ -289,15 +301,31 @@ herdr_resolve_split_pane() {
 # same for every call, which is the one thing this name exists not to be.
 herdr_mint_agent_name() {  # <callee-cwd-or-target-label>
   local slug tail
-  slug=$(printf '%s' "$(basename "${1:-call}")" \
-         | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' \
-         | tr -s '-' | sed 's/^-*//; s/-*$//' | cut -c1-14)
-  [[ -z "$slug" ]] && slug="call"
+  slug=$(herdr_slugify "$(basename "${1:-call}")" 14)
   tail=$(openssl rand -hex 3 2>/dev/null \
          || od -A n -N 3 -t x1 /dev/urandom 2>/dev/null | tr -d ' \n' \
          || true)
   [[ -z "$tail" ]] && tail=$(printf '%06x' $(( $$ % 16777216 )))
   printf 'hotline-%s-%s' "$slug" "$tail"
+}
+
+# --- Naming the callee's TAB --------------------------------------------------
+# A different field from the agent name above, and deliberately so: the agent name
+# is the addressable handle and stays dir-slugged (claude-plugins-hukk), while this
+# is the human-visible label on a tab a `tab`/`workspace` placement created.
+#
+# THE UNIQUE TOKEN LEADS. herdr's sidebar truncates a label's TAIL, and a run's
+# callees are typically all dialled into the SAME repo — so a subject-first label
+# renders as fifteen tabs that clip to the same string. Nonce first, subject after:
+# 6 + 1 + 13 = 20 characters, which is what the sidebar shows unclipped.
+#
+# A FUNCTION, not four lines at the one call site, because the 20-character budget
+# and its split are the shape the README and SKILL.md describe in prose. One source
+# for the arithmetic; the docs point here rather than restating it.
+herdr_tab_label() {  # herdr_tab_label <subject> [call-id]
+  local slug
+  slug=$(herdr_slugify "${1:-}" 13)
+  if [[ -n "${2:-}" ]]; then printf '%s-%s' "${2: -6}" "$slug"; else printf '%s' "$slug"; fi
 }
 
 # True when no LIVE agent already answers to this name. herdr rejects a duplicate

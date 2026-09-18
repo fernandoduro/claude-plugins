@@ -636,6 +636,79 @@ else
 fi
 rm -rf "$tmpf"
 
+# --label names a DETACHED workspace, which is the only name the tab strip has for
+# one: a detached callee's surface lives in its own workspace, so claude's terminal
+# title is not what the strip shows. The side and window placements pass no title at
+# all — claude's own live one stands there.
+tmpd=$(mktemp -d "$TMP_ROOT"/hotline-cmux-call-test-XXXXXX)
+mkdir -p "$tmpd/bin" "$tmpd/cwd" "$tmpd/home"
+cat > "$tmpd/bin/cmux" <<'EOF'
+#!/usr/bin/env bash
+ST="${CMUX_FAKE_STATE:?}"
+echo "$*" >> "$ST/cmux_calls"
+case "$1" in
+  new-workspace) echo "OK workspace:123" ;;
+  send)
+    printf '%s' "$*" > "$ST/send_args"
+    m=$(printf '%s' "$*" | grep -oE '__HOTLINE_PTYREADY_[0-9]+__' | head -1)
+    if [[ -n "$m" ]]; then { echo "$m"; echo "$m"; } >> "$0.screen"; fi
+    echo "OK workspace:123" ;;
+  read-screen)
+    cat "$0.screen" 2>/dev/null
+    printf 'Claude Code v2.1.226\n\xe2\x9d\xaf\xc2\xa0\n'; exit 0 ;;
+  tree)
+    jq -nc '{windows:[{workspaces:[{id:"WS-UUID-123",ref:"workspace:123",
+      panes:[{selected_surface_id:"SURF-UUID-123",
+              surfaces:[{id:"SURF-UUID-123",ref:"surface:123"}]}]}]}]}'
+    exit 0 ;;
+esac
+EOF
+chmod +x "$tmpd/bin/cmux"
+PATH="$tmpd/bin:$PATH" HOME="$tmpd/home" CMUX_FAKE_STATE="$tmpd" \
+  bash "$SCRIPT_UNDER_TEST" --detached --cwd "$tmpd/cwd" \
+  --name "hotline: fix 500s (conference_call)" --label "fix 500s" \
+  --prompt "/hotline:hotline-ringing [MODE: conference_call] [SESSION: caller-lbl] hello" \
+  >/dev/null 2>"$tmpd/stderr.txt" || true
+if grep -qF -- '--name hotline: fix 500s' "$tmpd/cmux_calls" 2>/dev/null; then
+  pass "the detached branch names its workspace 'hotline: <label>'"
+else
+  fail "the detached branch names its workspace 'hotline: <label>'" \
+       "cmux calls: $(cat "$tmpd/cmux_calls" 2>/dev/null)"
+fi
+# The label arrives as ONE argv word, spaces and all. An unquoted
+# `${WS_NAME:+--name "$WS_NAME"}` would word-split it and hand cmux a bare
+# `hotline:` plus three stray arguments.
+if grep -qF -- 'new-workspace --cwd '"$tmpd/cwd"' --name hotline: fix 500s --focus false' \
+     "$tmpd/cmux_calls" 2>/dev/null; then
+  pass "…unsplit by its own spaces, ahead of --focus false"
+else
+  fail "…unsplit by its own spaces, ahead of --focus false" \
+       "cmux calls: $(cat "$tmpd/cmux_calls" 2>/dev/null)"
+fi
+# CONTRACT GUARD: nothing in hotline may pin a static tab title, on any placement —
+# a pinned title outranks claude's dynamic one and suppresses the activity glyph for
+# the life of the tab.
+if grep -qE 'rename-tab|tab-action' "$tmpd/cmux_calls" 2>/dev/null; then
+  fail "…and no tab is renamed on the way" \
+       "cmux calls: $(cat "$tmpd/cmux_calls" 2>/dev/null)"
+else
+  pass "…and no tab is renamed on the way"
+fi
+# NO --label: the workspace keeps cmux's own naming rather than being called
+# `hotline: ` with nothing after it.
+rm -f "$tmpd/cmux_calls" "$tmpd/bin/cmux.screen"
+PATH="$tmpd/bin:$PATH" HOME="$tmpd/home" CMUX_FAKE_STATE="$tmpd" \
+  bash "$SCRIPT_UNDER_TEST" --detached --cwd "$tmpd/cwd" \
+  --prompt "/hotline:hotline-ringing [MODE: conference_call] [SESSION: caller-lbl2] hello" \
+  >/dev/null 2>>"$tmpd/stderr.txt" || true
+if grep -q -- '--name' "$tmpd/cmux_calls" 2>/dev/null; then
+  fail "no --label passes no --name, rather than an empty one" \
+       "cmux calls: $(cat "$tmpd/cmux_calls" 2>/dev/null)"
+else
+  pass "no --label passes no --name, rather than an empty one"
+fi
+rm -rf "$tmpd"
+
 # The whole point of the poison stubs: a leak is a test failure, not a stray pane.
 if [[ -s "$POISON_LOG" ]]; then
   fail "no test reaches the real cmux or claude" "$(cat "$POISON_LOG")"

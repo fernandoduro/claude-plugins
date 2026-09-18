@@ -55,8 +55,8 @@
 #
 # Usage:
 #   cmux-call-async.sh --cwd <path> (--prompt <text> | --prompt-file <path>)
-#                      [--resume <id>] [--name <name>] [--fork-session]
-#                      [--tools <list>] [--keep-workspace]
+#                      [--resume <id>] [--name <name>] [--label <text>]
+#                      [--fork-session] [--tools <list>] [--keep-workspace]
 #   # Returns immediately with: {"call_dir": "/tmp/hotline-call-xxxxx"}
 #
 # --prompt-file is preferred: it keeps the payload out of argv end to end.
@@ -66,7 +66,7 @@ set -euo pipefail
 if [[ "${1:-}" == "--help" ]]; then
   cat <<'EOF'
 Usage: cmux-call-async.sh --cwd <path> --prompt <text> [--resume <id>]
-                          [--name <name>] [--fork-session]
+                          [--name <name>] [--label <text>] [--fork-session]
                           [--tools <list>] [--keep-workspace]
 
 Opens an interactive claude session in a cmux workspace and returns immediately
@@ -77,6 +77,9 @@ workspace screen directly (they retain cmux ancestry, this script's
 background subshell would not).
 
 Options:
+  --label <text>     What the callee is DOING. Used as the workspace name for
+                     --detached; a surface placement reads it off --name, which
+                     claude emits as its own live terminal title.
   --tools <list>     Allowed tools (default: "Bash Read Edit Write Grep Glob")
   --keep-workspace   Do not close the cmux workspace after STATUS. Used by
                      conference-call mode to hand the workspace off to the
@@ -94,6 +97,11 @@ PROMPT=""
 PROMPT_FILE=""
 RESUME_ID=""
 SESSION_NAME=""
+# What the callee is DOING. A SURFACE placement needs nothing from it: SESSION_NAME
+# carries the same label and claude publishes that as its terminal title, which cmux
+# renders live in the tab strip. A DETACHED callee has no such tab of its own — it
+# gets a workspace, whose name is what the strip shows — so this is what names it.
+LABEL=""
 FORK_SESSION=false
 ALLOWED_TOOLS="Bash Read Edit Write Grep Glob"
 KEEP_WORKSPACE=false
@@ -113,6 +121,7 @@ while [[ $# -gt 0 ]]; do
     --prompt-file)    PROMPT_FILE="$2";    shift 2 ;;
     --resume)         RESUME_ID="$2";      shift 2 ;;
     --name)           SESSION_NAME="$2";   shift 2 ;;
+    --label)          LABEL="$2";          shift 2 ;;
     --fork-session)   FORK_SESSION=true;   shift   ;;
     --tools)          ALLOWED_TOOLS="$2";  shift 2 ;;
     --keep-workspace) KEEP_WORKSPACE=true; shift   ;;
@@ -368,7 +377,13 @@ fail_async() {
 # caller's own surface context can't be resolved (see below). Sets SEND_TARGET.
 do_detached() {
   local WS_NAME WS_OUTPUT WS_REF
-  WS_NAME="${SESSION_NAME:-hotline}"
+  # A detached callee's workspace name IS what the user reads in the tab strip, so
+  # the label goes there. Prefixed, not bare: `--window <name>` resolves a window by
+  # the title of a workspace inside it (open-window-surface.sh), so a workspace
+  # titled with a bare subject could be picked up as a `--window` target by a later
+  # dial.
+  WS_NAME="${LABEL:+hotline: $LABEL}"
+  WS_NAME="${WS_NAME:-${SESSION_NAME:-hotline}}"
   if ! WS_OUTPUT=$(cmux new-workspace --cwd "$CWD" --name "$WS_NAME" --focus false 2>&1); then
     fail_async "cmux new-workspace failed: $WS_OUTPUT"
   fi
@@ -423,6 +438,13 @@ else
     # Side-by-side: cmux-cli's canonical opener. On a --wait-ready timeout it
     # exits 3 with NO JSON (the surface ref is named in its stderr diagnostic);
     # parse it so we can close the orphan rather than leak it.
+    # NO --title, deliberately. The opener would apply it with `cmux rename-tab`,
+    # which PINS a static title over claude's own dynamic one for the life of the
+    # tab — costing the ◑/✳/⏺ activity glyph that is how a stuck callee is spotted.
+    # The tab already reads the label: SESSION_NAME goes to `claude -n`, claude
+    # publishes it as the terminal title, and cmux renders that live. The opener
+    # prints a hint to stderr about the absent --title; it lands in surface_err.txt
+    # and is expected there.
     if SURF_JSON=$("$OPEN_SIDE_SURFACE" --caller --wait-ready \
         --wait-ready-timeout "$READY_TIMEOUT" --json 2>"$CALL_DIR/surface_err.txt"); then
       SURF_REF=$(printf '%s' "$SURF_JSON" | jq -r '.surface_ref // empty')

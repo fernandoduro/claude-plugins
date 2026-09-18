@@ -961,6 +961,194 @@ fi
   rm -f "$(cat "$call_dir/launch_script.txt")"
 rm -rf "$tmp" "$call_dir"
 
+# ---------------------------------------------------------------------------
+# --label: it reaches the tab through claude's OWN terminal title, and NOTHING
+# here pins a static one.
+#
+# claude publishes its `-n` session name as the terminal title; cmux renders that
+# live in the tab strip behind an activity glyph. `cmux rename-tab` would pin a
+# static title that outranks it for the life of the tab, costing the glyph — so the
+# side and window placements pass no title at all, and only a DETACHED callee, which
+# has a workspace instead of a tab of its own, takes the label as a name.
+# ---------------------------------------------------------------------------
+
+# Opener stub that ECHOES --title back the way the real one does. Hotline passes
+# none; the stub has to be able to report one for that absence to mean something.
+make_titled_side_stub() {
+  cat > "$1" <<'EOF'
+#!/usr/bin/env bash
+echo "open-side-surface invoked: $*" >> "${SIDE_STUB_LOG:?}"
+TITLE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --title) TITLE="${2:-}"; shift 2 ;; *) shift ;; esac
+done
+jq -nc --arg t "$TITLE" --arg st "${SIDE_STUB_TITLE_STATUS:-}" \
+  '{surface_ref:"surface:777", surface_id:"SURFACE-UUID-777",
+    pane_ref:"pane:55", pane_id:"PANE-UUID-55", workspace_ref:"workspace:5",
+    mode:"new-surface", ready:"ready",
+    surface_title: (if $t == "" then null else $t end),
+    title_status: (if $st != "" then $st elif $t == "" then "unset" else "applied" end)}'
+EOF
+  chmod +x "$1"
+}
+
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-cmux-test-XXXXXX)
+mkdir -p "$tmp/cwd"
+: > "$tmp/screen.txt"
+make_min_surface_cmux "$tmp/bin"
+make_titled_side_stub "$tmp/open-side.sh"
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" \
+  HOTLINE_OPEN_SIDE_SURFACE="$tmp/open-side.sh" SIDE_STUB_LOG="$tmp/side_log" \
+  bash "$SCRIPT_UNDER_TEST" --cwd "$tmp/cwd" --prompt "hello" \
+    --name "hotline: fix 500s (work_order)" --label "fix 500s" 2>"$tmp/stderr.txt")
+call_dir=$(printf '%s' "$out" | jq -r '.call_dir // empty')
+
+# CONTRACT GUARD. This absence IS the feature: a passing assertion here means no
+# static title was pinned, and it fails the moment a --title passthrough returns.
+if grep -q -- '--title' "$tmp/side_log" 2>/dev/null; then
+  fail "the side opener is given NO --title, so claude's live title stands" \
+       "side_log=$(cat "$tmp/side_log" 2>/dev/null)"
+else
+  pass "the side opener is given NO --title, so claude's live title stands"
+fi
+# CONTRACT GUARD, same reason: no rename anywhere on the side path.
+if grep -qE 'rename-tab|tab-action' "$tmp/cmux_calls" 2>/dev/null; then
+  fail "…and no cmux rename-tab is issued either" \
+       "cmux calls: $(cat "$tmp/cmux_calls" 2>/dev/null)"
+else
+  pass "…and no cmux rename-tab is issued either"
+fi
+if [[ ! -e "$call_dir/label_status.txt" ]]; then
+  pass "…so there is no title outcome to report, and none is written"
+else
+  fail "…so there is no title outcome to report, and none is written" \
+       "got: $(cat "$call_dir/label_status.txt" 2>/dev/null)"
+fi
+
+# The `-n %q` reconstruction. The whole name has to arrive as ONE argv word however
+# many spaces and parens are in it, so the expectation is DERIVED with the same %q
+# the launcher uses rather than hand-quoted — a hand-quoted literal would drift the
+# moment the name's shape did. Asserted on the argv word alone, not the whole
+# script: the script also carries a `cd` line and whatever the ambient env adds.
+launch=$(cat "$(cat "$call_dir/launch_script.txt")" 2>/dev/null)
+labelled_name="hotline: fix 500s (work_order)"
+if grep -qF -- "-n $(printf '%q' "$labelled_name") " <<<"$launch"; then
+  pass "the labelled session name survives %q quoting as one argv word"
+else
+  fail "the labelled session name survives %q quoting as one argv word" "got=$launch"
+fi
+[[ -f "$call_dir/launch_script.txt" ]] && rm -f "$(cat "$call_dir/launch_script.txt")"
+rm -rf "$tmp" "$call_dir"
+
+# --detached: the label names the WORKSPACE, prefixed. `--window <name>` resolves a
+# window by the title of a workspace inside it, so a bare subject as a workspace
+# title could be picked up as a later dial's --window target.
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-cmux-test-XXXXXX)
+mkdir -p "$tmp/bin" "$tmp/cwd"
+cat > "$tmp/bin/cmux" <<'EOF'
+#!/usr/bin/env bash
+ST="${CMUX_FAKE_STATE:?}"
+echo "$*" >> "$ST/cmux_calls"
+case "$1" in
+  new-workspace) echo "OK workspace:123" ;;
+  read-screen)   cat "$ST/screen.txt" 2>/dev/null ;;
+  send)          shift; printf '%s\n%s\n' "$*" "$*" >> "$ST/screen.txt" ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/bin/cmux"
+: > "$tmp/screen.txt"
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" HOTLINE_SURFACE_READY_TIMEOUT=2 \
+  bash "$SCRIPT_UNDER_TEST" --detached --cwd "$tmp/cwd" --prompt "hello" \
+    --name "hotline: fix 500s (work_order)" --label "fix 500s" 2>"$tmp/stderr.txt")
+call_dir=$(printf '%s' "$out" | jq -r '.call_dir // empty')
+if grep -qF -- 'new-workspace --cwd '"$tmp/cwd"' --name hotline: fix 500s' "$tmp/cmux_calls" 2>/dev/null; then
+  pass "--detached names the workspace from the label, prefixed hotline:"
+else
+  fail "--detached names the workspace from the label, prefixed hotline:" \
+       "cmux calls: $(cat "$tmp/cmux_calls" 2>/dev/null)"
+fi
+# The MODE is deliberately absent from the workspace name: `--window <name>`
+# resolves by workspace title, so the name a later dial might be asked to find has
+# to be the one a caller would type — the label, not the label plus punctuation.
+if grep -qF -- '--name hotline: fix 500s (work_order)' "$tmp/cmux_calls" 2>/dev/null; then
+  fail "…without the mode suffix the session name carries" \
+       "cmux calls: $(cat "$tmp/cmux_calls" 2>/dev/null)"
+else
+  pass "…without the mode suffix the session name carries"
+fi
+[[ -f "$call_dir/launch_script.txt" ]] && rm -f "$(cat "$call_dir/launch_script.txt")"
+rm -rf "$tmp" "$call_dir"
+
+# --window: NOTHING is renamed, and the cached surface handle is the UUID the
+# opener now reports rather than the positional ref it used to be the only source
+# of. A positional `surface:N` names whatever sits in slot N right now, and slot N
+# in the caller's own workspace is a different surface from slot N in the callee's
+# window (claude-plugins-h2et).
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-cmux-test-XXXXXX)
+mkdir -p "$tmp/bin" "$tmp/cwd"
+cat > "$tmp/bin/cmux" <<'EOF'
+#!/usr/bin/env bash
+ST="${CMUX_FAKE_STATE:?}"
+echo "$*" >> "$ST/cmux_calls"
+case "$1" in
+  # The tree is read TWICE on this path: once to resolve the window, and once
+  # after new-surface to map the new ref to its UUID. surface:200 has to be in it
+  # for the second lookup to find anything — a fixture that omitted it would let
+  # the positional fallback pass for the wrong reason.
+  tree)        echo '{"windows":[{"id":"WIN-B","ref":"window:2","workspaces":[{"id":"WS-P","ref":"workspace:5","title":"proj","panes":[{"ref":"pane:1","index":0,"surfaces":[{"ref":"surface:200","id":"11111111-2222-4333-8444-555555555555","pane_id":"PANE-UUID-9","title":"zsh"}]}]}]}]}' ;;
+  new-surface) echo "OK surface:200 pane:9 workspace:5" ;;
+  # The readiness probe wants to see `echo MARKER` TWICE — the typed line plus the
+  # output of a shell that actually ran it. Echoing each send twice is that shape.
+  send)        shift; printf '%s\n%s\n' "$*" "$*" >> "$ST/screen.txt" ;;
+  read-screen) cat "$ST/screen.txt" 2>/dev/null ;;
+  rename-tab)  echo "OK" ;;
+esac
+exit 0
+EOF
+chmod +x "$tmp/bin/cmux"
+: > "$tmp/screen.txt"
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" HOTLINE_SURFACE_READY_TIMEOUT=4 \
+  bash "$SCRIPT_UNDER_TEST" --window "window:2" --cwd "$tmp/cwd" --prompt "hello" \
+    --name "hotline: fix 500s (work_order)" --label "fix 500s" 2>"$tmp/stderr.txt")
+call_dir=$(printf '%s' "$out" | jq -r '.call_dir // empty')
+if [[ -n "$call_dir" && ! -f "$call_dir/error.txt" ]]; then
+  pass "--window with a label launches cleanly"
+else
+  fail "--window with a label launches cleanly" \
+       "out=$out error=$(cat "$call_dir/error.txt" 2>/dev/null) stderr=$(cat "$tmp/stderr.txt")"
+fi
+if [[ "$(cat "$call_dir/surface_ref.txt" 2>/dev/null)" == "11111111-2222-4333-8444-555555555555" ]]; then
+  pass "the cached --window handle is the surface's UUID, not its positional ref"
+else
+  fail "the cached --window handle is the surface's UUID, not its positional ref" \
+       "got: $(cat "$call_dir/surface_ref.txt" 2>/dev/null)"
+fi
+if grep -qF -- 'send --surface 11111111-2222-4333-8444-555555555555' "$tmp/cmux_calls" 2>/dev/null; then
+  pass "…and the launch send is addressed by that UUID too"
+else
+  fail "…and the launch send is addressed by that UUID too" \
+       "cmux calls: $(cat "$tmp/cmux_calls" 2>/dev/null)"
+fi
+# CONTRACT GUARD: this was the one placement that renamed a surface after the fact.
+if grep -qE 'rename-tab|rename-workspace|tab-action' "$tmp/cmux_calls" 2>/dev/null; then
+  fail "…with nothing renamed: not the surface, not the workspace title" \
+       "cmux calls: $(cat "$tmp/cmux_calls" 2>/dev/null)"
+else
+  pass "…with nothing renamed: not the surface, not the workspace title"
+fi
+# CONTRACT GUARD: the workspace title is `--window <name>`'s addressing key, so a
+# label must never become one — a dial that created `fix 500s` as a workspace title
+# could be adopted as a later `--window fix 500s` target.
+if grep -qE 'new-workspace .*--name (hotline: )?fix' "$tmp/cmux_calls" 2>/dev/null; then
+  fail "…and no workspace is created carrying the label" \
+       "cmux calls: $(cat "$tmp/cmux_calls" 2>/dev/null)"
+else
+  pass "…and no workspace is created carrying the label"
+fi
+[[ -f "$call_dir/launch_script.txt" ]] && rm -f "$(cat "$call_dir/launch_script.txt")"
+rm -rf "$tmp" "$call_dir"
+
 # The whole point of the poison stubs: a leak is a test failure, not a stray pane.
 if [[ -s "$POISON_LOG" ]]; then
   fail "no test reaches the real cmux or claude" "$(cat "$POISON_LOG")"

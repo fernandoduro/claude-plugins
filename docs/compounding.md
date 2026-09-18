@@ -196,6 +196,12 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   When a transport gains a remote mode, list every step that reads the filesystem, the
   environment or a local index, and re-ask each of them on the far side.
   (claude-plugins-7wze.8, claude-plugins-7wze.10, 2a4cc64)
+- **Guard a `read` that consumes a lookup: under `set -e`, empty input is fatal.**
+  `IFS=$'\t' read -r a b c < <(jq …)` returns 1 when the lookup matches nothing, and
+  `set -euo pipefail` turns that into an exit before any output — so a script that
+  meant to *degrade* to a fallback aborts the whole call instead, silently and with
+  no diagnostic. Both cmux surface openers resolve ref→UUID this way; append
+  `|| true` and let the fallback below it run. (claude-plugins-h2et)
 - **A wrapped CLI's chatter stays out of every captured JSON.** `gws` prints
   "Using keyring backend" to stderr and hotline hit the same class from stdout, so
   a `2>&1` capture yields a file that looks fine and fails every parse downstream.

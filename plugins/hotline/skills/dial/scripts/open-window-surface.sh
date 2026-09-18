@@ -35,7 +35,9 @@
 #                          [--wait-ready] [--wait-ready-timeout <s>] [--json]
 #
 # Output (--json): same shape as open-side-surface.sh, plus "created" (bool)
-#   reporting whether a new window was made.
+#   reporting whether a new window was made. surface_id / pane_id / workspace_id
+#   are the stable UUIDs, present when the tree lookup resolved them; every caller
+#   should prefer them over the positional *_ref fields, which renumber.
 #
 # Exit codes:
 #   0 = surface created (ready field reports PTY readiness when --wait-ready)
@@ -180,6 +182,33 @@ if [[ -z "$new_surface" ]]; then
   exit 1
 fi
 
+# --- Resolve the new surface's stable UUID ------------------------------------
+# The `OK ...` line gives positional refs only, and those RENUMBER as surfaces open
+# and close. Every caller downstream — the launch send, surface_ref.txt, the session
+# cache, superseded-surface cleanup — needs a handle that still names this surface
+# tomorrow, and a `surface:N` addressed without a --workspace/--window pin resolves
+# inside whatever workspace context the caller inherited (docs/compounding.md).
+# `cmux tree --all --json --id-format both` is the only place the ref→UUID mapping
+# lives; this is the same lookup open-side-surface.sh does, so the two openers hand
+# back the same shape of handle (claude-plugins-h2et).
+#
+# Refs stay the fallback: if the lookup comes up empty, behavior is what it was
+# rather than a hard failure over a field that is an optimization for most callers.
+new_surface_id=""; new_pane_id=""; new_ws_id=""
+tree_both=$(cmux tree --all --json --id-format both 2>/dev/null || true)
+if [[ -n "$tree_both" ]]; then
+  # `|| true` below because an empty lookup makes `read` return 1, and under `set -e`
+  # that would kill the script over an optimization.
+  IFS=$'\t' read -r new_surface_id new_pane_id new_ws_id < <(
+    printf '%s' "$tree_both" | jq -r --arg s "$new_surface" '
+      .windows[]?.workspaces[]? as $ws
+      | $ws.panes[]?.surfaces[]?
+      | select(.ref == $s)
+      | [(.id // ""), (.pane_id // ""), ($ws.id // "")]
+      | @tsv' 2>/dev/null | head -1
+  ) || true
+fi
+
 ready_status="skipped"
 if [[ $WAIT_READY -eq 1 ]]; then
   if bash "$SCRIPT_DIR/surface-ready.sh" --surface "$new_surface" --pane "$new_pane" \
@@ -193,10 +222,15 @@ fi
 if [[ $OUTPUT_JSON -eq 1 ]]; then
   jq -n \
     --arg surface "$new_surface" --arg pane "$new_pane" --arg ws "$new_ws" \
+    --arg surface_id "$new_surface_id" --arg pane_id "$new_pane_id" \
+    --arg ws_id "$new_ws_id" \
     --arg win "$target_win" --arg ready "$ready_status" \
     --argjson created "$created_window" \
     '{surface_ref: $surface, pane_ref: $pane, workspace_ref: $ws,
-      window_ref: $win, mode: "window", created: $created, ready: $ready}'
+      window_ref: $win, mode: "window", created: $created, ready: $ready}
+     + (if $surface_id == "" then {} else {surface_id: $surface_id} end)
+     + (if $pane_id    == "" then {} else {pane_id:    $pane_id}    end)
+     + (if $ws_id      == "" then {} else {workspace_id: $ws_id}    end)'
 else
   printf 'OK %s %s %s window=%s created=%s ready=%s\n' \
     "$new_surface" "$new_pane" "$new_ws" "$target_win" "$created_window" "$ready_status"

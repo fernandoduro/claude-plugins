@@ -273,6 +273,43 @@ if grep -q -- "--focus false" "$tmp/create_calls" 2>/dev/null \
 else
   fail "window-mode surface is created --focus false" "calls=$(cat "$tmp/create_calls" 2>/dev/null)"
 fi
+
+# Case W1b: the surface's stable UUID is REPORTED, and its absence degrades to the
+# positional ref rather than failing. Every caller downstream — the launch send,
+# the session cache, superseded-surface cleanup — needs a handle that still names
+# this surface tomorrow, and `surface:N` renumbers as siblings open and close.
+# The two arms matter separately: W1 above already covers the tree-without-surfaces
+# shape (ids empty, refs used), so this one proves the resolved arm
+# (claude-plugins-h2et).
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-win-XXXXXX); mkdir -p "$tmp/bin"
+cat > "$tmp/bin/cmux" <<'EOF'
+#!/usr/bin/env bash
+ST="${CMUX_FAKE_STATE:?}"
+case "$1" in
+  tree) echo '{"windows":[{"id":"WIN-C","ref":"window:3","workspaces":[{"id":"WS-U","ref":"workspace:30","title":null,"panes":[{"ref":"pane:1","index":0,"surfaces":[{"ref":"surface:200","id":"AAAA1111-2222-4333-8444-555555555555","pane_id":"PANE-UUID-9","title":"zsh"}]}]}]}]}' ;;
+  new-surface) echo "OK surface:200 pane:9 workspace:30" ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$tmp/bin/cmux"
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" bash "$WIN" --window window:3 --json 2>"$tmp/err.txt")
+sid=$(printf '%s' "$out" | jq -r '.surface_id // empty')
+pid=$(printf '%s' "$out" | jq -r '.pane_id // empty')
+wid=$(printf '%s' "$out" | jq -r '.workspace_id // empty')
+if [[ "$sid" == "AAAA1111-2222-4333-8444-555555555555" && "$pid" == "PANE-UUID-9" \
+      && "$wid" == "WS-U" ]]; then
+  pass "the new surface's UUIDs are resolved from the tree and emitted"
+else
+  fail "the new surface's UUIDs are resolved from the tree and emitted" \
+       "surface_id=$sid pane_id=$pid workspace_id=$wid err=$(cat "$tmp/err.txt")"
+fi
+# open-side-surface.sh emits surface_id too; the two openers have to hand callers
+# the same SHAPE of handle or every caller needs a per-opener branch.
+if [[ "$sid" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+  pass "…as a UUID, the same shape the side opener reports"
+else
+  fail "…as a UUID, the same shape the side opener reports" "surface_id=$sid"
+fi
 rm -rf "$tmp"
 
 # Case W2: name form, a workspace titled <name> already exists → reuse its window.

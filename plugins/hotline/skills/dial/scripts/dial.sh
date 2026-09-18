@@ -31,7 +31,7 @@
 #           [--headless] [--tools <list>]
 #           [--resume <session-id> [--no-fork]] [--fresh]
 #           [--caller-session <id>] [--refresh-identity]
-#           [--boot-timeout <seconds>]
+#           [--boot-timeout <seconds>] --label <text>
 #
 # --transport picks the multiplexer that HOSTS the callee. cmux is the default and
 # nothing about it changes; `herdr` is opt-in, and it hosts the callee HERE unless
@@ -55,6 +55,12 @@
 #
 # --prompt-file is preferred: it keeps the message out of argv, so quoting,
 # newlines and shell metacharacters are never in play.
+#
+# --label <text> is REQUIRED — 2-4 words naming what the callee is DOING. It is the
+# callee's session name, which claude emits as its terminal title, which cmux renders
+# in the tab strip behind a live activity glyph: `◑ hotline: fix 500s (work_order)`.
+# Nothing else distinguishes two callees dialled into one repo. A missing or
+# empty/whitespace-only value is an args error.
 #
 # --fresh ignores this caller's cached session AND cached surface for the resolved
 # target, so the dial opens a BRAND-NEW callee session instead of resuming the one
@@ -205,12 +211,16 @@ FRESH=false
 CALLER_SESSION_ARG=""
 REFRESH_IDENTITY=false
 BOOT_TIMEOUT=""
+# What the callee is DOING, in 2-4 words. Required: it is the callee's whole
+# identity in the cmux tab strip, and a dial that omits it is refused at the args
+# gate rather than named after the directory every other callee shares.
+LABEL=""
 
 # Every flag that consumes a value. A trailing one of these used to hang the
 # script forever: `shift 2` with a single arg left FAILS without shifting, and
 # with no `set -e` the loop just spun on the same $1 at full CPU, emitting no
 # JSON at all. Reachable from a plain `--prompt-file "$VAR"` with an empty VAR.
-VALUE_FLAGS=" --target --mode --prompt-file --prompt --placement --window --transport --remote --tools --resume --caller-session --boot-timeout "
+VALUE_FLAGS=" --target --mode --prompt-file --prompt --placement --window --transport --remote --tools --resume --caller-session --boot-timeout --label "
 # --window is applied AFTER parsing (below) so it wins over --placement
 # regardless of the order the two were given in.
 WINDOW_REQUESTED=false
@@ -246,6 +256,7 @@ while [[ $# -gt 0 ]]; do
     --caller-session)  CALLER_SESSION_ARG="$2";    shift 2 ;;
     --refresh-identity) REFRESH_IDENTITY=true;     shift ;;
     --boot-timeout)    BOOT_TIMEOUT="$2";          shift 2 ;;
+    --label)           LABEL="$2";                 shift 2 ;;
     # Silently ignoring an unrecognized flag turns a typo into a wrong call:
     # `--prompt-fil /tmp/x` would dial with no message at all.
     *) emit_error args "Unrecognized argument: $1" \
@@ -269,6 +280,26 @@ case "$MODE_IN" in
   *)  emit_error args "Unknown --mode '$MODE_IN'" \
         "Valid modes: quick, work_order, conference." ;;
 esac
+
+# --- --label, and why it is required ----------------------------------------
+# Every callee's tab reads `hotline: <label> (<mode>)`, so without a label a run's
+# callees are told apart only by position. An optional knob does not get passed:
+# HOTLINE_HERDR_TAB_LABEL shipped documented and nothing ever set it. So the flag
+# is a requirement, not a suggestion, and it is checked HERE — before anything with
+# a side effect — so the refusal costs nothing.
+#
+# EMPTY COUNTS AS MISSING. `--label "$VAR"` with an unset VAR reaches this with a
+# present flag and no value; whitespace-only is the same nothing. Unchecked, the
+# callee's tab would read `hotline:  (quick_call)`.
+#
+# REQUIRED UNCONDITIONALLY, follow-ups included: whether this dial is first contact
+# comes out of the session-cache lookup hundreds of lines below, and an args gate
+# cannot know it. A follow-up's label is ignored instead (see the fallback below) —
+# the callee keeps the name first contact gave it.
+if [[ -z "${LABEL//[[:space:]]/}" ]]; then
+  emit_error args "No --label provided (it is required on every dial)" \
+    "Pass --label \"<2-4 word slug of the task>\" — it names the callee in the cmux tab strip, which is the only thing that tells two callees in one repo apart. Examples: --label \"fix hotline titles\", --label \"review pr 2393\"."
+fi
 
 case "$PLACEMENT" in
   side|detached) ;;
@@ -1023,7 +1054,26 @@ chmod 600 "$SEND_PROMPT_FILE"
 printf '%s' "$SEND_PROMPT" > "$SEND_PROMPT_FILE"
 trap 'rm -f "$ERR_FILE" "$SEND_PROMPT_FILE"' EXIT
 
-SESSION_NAME="hotline: $(basename "$MY_CWD") → $(basename "$TARGET_PATH") ($MODE_TAG)"
+# ---------------------------------------------------------------------------
+# THE LABEL REACHES THE TAB STRIP THROUGH CLAUDE'S OWN TERMINAL TITLE.
+#
+# `claude -n <name>` is not just the /resume picker's entry: claude emits that name
+# as the terminal title, and cmux renders it live in the tab strip with the activity
+# glyph in front — `◑ hotline: fix 500s (work_order)` while the callee is thinking,
+# `⏺` when it is idle. So naming the session names the tab, for free, and it stays a
+# LIVE title.
+#
+# WHICH IS WHY NOTHING HERE PINS A TITLE. `cmux rename-tab` sets a static title that
+# outranks claude's dynamic one for the life of the tab — verified live: after a
+# rename the title never changed again, through further claude activity, until
+# `cmux tab-action --action clear-name`. Pinning a label would trade the ◑/✳/⏺ state
+# indicator, which is how you spot a stuck callee, for a name the session name
+# already provides.
+#
+# The caller and target directories drop OUT of the name to make room: they are
+# recorded in the call registry, the switchboard, and dial history, none of which is
+# a 30-character tab.
+SESSION_NAME="hotline: $LABEL ($MODE_TAG)"
 
 # A follow-up that ends up launching a FRESH callee is first contact for the callee,
 # whatever it is for the caller. That callee never loaded the ringing skill, so a raw
@@ -1260,7 +1310,14 @@ fi
 # ---------------------------------------------------------------------------
 if [[ "$MODE_TAG" == "conference_call" && "$TRANSPORT" == "cmux" ]]; then
   CONF_ARGS=(--cwd "$TARGET_PATH")
+  # --name only on first contact: a fall-through launch `--resume`s the cached
+  # session, which keeps the name it was born with. --label is UNCONDITIONAL,
+  # because FIRST_CONTACT answers "did this dial have a cached session" and stays
+  # false when reuse refuses (see RESHAPED_AS_FIRST_CONTACT) — yet that launch
+  # still creates a brand-new workspace, whose name is the only handle a detached
+  # callee has in the tab strip. Gated, it would read a bare `hotline`.
   $FIRST_CONTACT && CONF_ARGS+=(--name "$SESSION_NAME")
+  CONF_ARGS+=(--label "$LABEL")
   CONF_ARGS+=(${PLACEMENT_ARGS[@]+"${PLACEMENT_ARGS[@]}"})
   [[ -n "$EFFECTIVE_RESUME" ]] && CONF_ARGS+=(--resume "$EFFECTIVE_RESUME")
   $DO_FORK && CONF_ARGS+=(--fork-session)
@@ -1351,7 +1408,15 @@ fire_headless() {
 
 fire_cmux() {
   local ARGS=(--cwd "$TARGET_PATH")
+  # A DETACHED callee's workspace name is the only name the tab strip has for it —
+  # claude's terminal title belongs to the surface inside, and a detached placement
+  # lands that surface in its own workspace tab. So --label is UNCONDITIONAL:
+  # FIRST_CONTACT answers "did this dial have a cached session" and stays false when
+  # reuse refuses (see RESHAPED_AS_FIRST_CONTACT), yet that fall-through still opens
+  # a brand-new workspace, which gated would be named a bare `hotline`. --name stays
+  # gated — the fall-through `--resume`s the cached session, keeping its birth name.
   $FIRST_CONTACT && ARGS+=(--name "$SESSION_NAME")
+  ARGS+=(--label "$LABEL")
   ARGS+=(${PLACEMENT_ARGS[@]+"${PLACEMENT_ARGS[@]}"})
   [[ -n "$EFFECTIVE_RESUME" ]] && ARGS+=(--resume "$EFFECTIVE_RESUME")
   $DO_FORK && ARGS+=(--fork-session)
@@ -1375,9 +1440,15 @@ fire_cmux() {
 # fallback entry says so rather than letting a caller infer continuity.
 fire_herdr() {
   local ARGS=(--cwd "$TARGET_PATH")
-  # No --name: herdr-call-async.sh takes none. The agent name IS this call's
-  # identity in `herdr agent list`, and it is minted from the callee's cwd — a
-  # session name never reached the callee at all (claude-plugins-hukk).
+  # --name is claude's OWN terminal title, which is how the label reaches a split
+  # pane: a split has no tab of its own to label, but the pane's title is the
+  # session name. Distinct from the AGENT name, which stays minted from the callee's
+  # cwd because it is this call's addressable identity in `herdr agent list`
+  # (claude-plugins-hukk) — a session name never reaches that field.
+  #
+  # --label additionally names the TAB a `tab`/`workspace` placement creates, never
+  # the agent, so it cannot displace the directory in that 14-char budget.
+  ARGS+=(--name "$SESSION_NAME" --label "$LABEL")
   [[ -n "$TOOLS" ]] && ARGS+=(--tools "$TOOLS")
   [[ -n "$BOOT_TIMEOUT" ]] && ARGS+=(--boot-timeout "$BOOT_TIMEOUT")
   ARGS+=(--prompt-file "$SEND_PROMPT_FILE")

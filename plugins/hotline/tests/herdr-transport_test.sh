@@ -132,6 +132,11 @@ trap cleanup EXIT
 #   HERDR_STUB_TAB_PANE       the root pane `tab create` returns (default w1:p7)
 #   HERDR_STUB_TAB_ID         the tab id `tab create` returns (default w1:t7)
 #   HERDR_STUB_TAB_FAIL=1     `tab create` returns a server error
+#   HERDR_STUB_AGENT_TAB      the tab_id `agent get` reports (default: the agent
+#                             pane's own `wN` prefix + `:t1`)
+#   HERDR_STUB_TAB_PANE_COUNT the pane_count `tab get` reports (default 2 — the
+#                             SPLIT shape, where the callee shares the caller's tab)
+#   HERDR_STUB_TAB_GET_FAIL=1 `tab get` returns a server error
 #   HERDR_STUB_TAB_NO_PANE=1  `tab create` succeeds but reports no root pane id
 #   HERDR_STUB_WORKSPACES     space-separated `<id>:<label>` pairs `workspace list`
 #                             reports (default: none — every label is absent)
@@ -312,12 +317,34 @@ case "$1 ${2:-}" in
     fi
     PANE="${HERDR_STUB_AGENT_PANE:-w1:p9}"
     [[ "${HERDR_STUB_NO_PANE_ID:-}" == "1" ]] && PANE=""
+    # tab_id, which the real CLI reports on every agent. Derived from the pane's
+    # workspace prefix by default, as a split's pane is: a split SHARES the
+    # anchor's tab, which is why the default tab below carries two panes.
+    TAB="${HERDR_STUB_AGENT_TAB:-${PANE%%:*}:t1}"
+    [[ -z "$PANE" ]] && TAB="${HERDR_STUB_AGENT_TAB:-}"
     jq -nc --arg n "$NAME" --arg s "$STATUS" --arg sid "$SID" \
-           --arg ready "$READY" --arg pane "$PANE" \
+           --arg ready "$READY" --arg pane "$PANE" --arg tab "$TAB" \
       '{id:"cli:agent:get",result:{agent:({name:$n,agent:"claude",agent_status:$s,
          agent_session:{agent:"claude",kind:"id",source:"herdr:claude",value:$sid}}
          + (if $ready == "omit" then {} else {interactive_ready:($ready == "true")} end)
+         + (if $tab == "" then {} else {tab_id:$tab} end)
          + (if $pane == "" then {} else {pane_id:$pane} end))}}'
+    exit 0 ;;
+
+  "tab get")
+    [[ "${HERDR_STUB_TAB_GET_FAIL:-}" == "1" ]] && err tab_not_found "no such tab $3"
+    # TWO PANES BY DEFAULT — the split shape. A tab hotline created for a callee
+    # holds that callee alone (pane_count 1); the default placement is a split,
+    # whose pane shares the caller's tab, and renaming THAT retitles the caller.
+    jq -nc --arg t "$3" --argjson n "${HERDR_STUB_TAB_PANE_COUNT:-2}" \
+      '{id:"cli:tab:get",result:{type:"tab_info",tab:{tab_id:$t,pane_count:$n,label:"1"}}}'
+    exit 0 ;;
+
+  # Kept although hotline never calls it: the "renames nothing" contract guards
+  # assert an ABSENCE from the log, and a stub that could not answer a rename
+  # would make those guards pass for the wrong reason.
+  "tab rename")
+    echo '{"id":"cli:tab:rename","result":{"type":"ok"}}'
     exit 0 ;;
 
   "agent read")
@@ -853,6 +880,92 @@ out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
 log=$(tr -d '\\' < "$t/herdr.log")
 [[ "$log" == *"--label boss-1-review"* ]]
 check "HOTLINE_HERDR_TAB_LABEL is used verbatim" $? "herdr calls: $log"
+
+# --- --label: the SUBJECT, behind the nonce that has to lead -----------------
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w6:p1" HOTLINE_HERDR_PLACEMENT=tab \
+      HERDR_STUB_TAB_PANE="w6:p12" HERDR_STUB_TAB_ID="w6:t4" \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" --label "fix 500s" 2>"$t/err.txt")
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+log=$(tr -d '\\' < "$t/herdr.log")
+nonce=$(cat "$cd_path/call_id.txt" 2>/dev/null || true)
+label=$(sed -n 's/.*--label \([^ ]*\).*/\1/p' <<<"$log" | head -1)
+[[ "$label" == "${nonce: -6}-fix-500s" ]]
+check "--label becomes the tab label, slugged, behind the call nonce" $? \
+  "label='$label' nonce='$nonce'"
+[[ ${#label} -le 20 ]]
+check "…still inside herdr's ~20-char sidebar budget" $? "label='$label' (${#label} chars)"
+
+# THE AGENT NAME IS NOT THE LABEL. Slugging a session-ish string into the agent
+# name gave every agent in `herdr agent list` the same `hotline-hotline-*` and
+# said nothing about which directory its callee sat in (claude-plugins-hukk).
+agent=$(cat "$cd_path/herdr_agent.txt" 2>/dev/null || true)
+[[ "$agent" == "hotline-$(basename "$t/target")-"* && "$agent" != *"fix"* ]]
+check "…while the agent name stays the TARGET's dir slug, untouched by the label" $? \
+  "agent='$agent' (expected hotline-$(basename "$t/target")-*)"
+
+# A label long enough to blow the budget is truncated, not dropped — and the nonce
+# still leads, because the sidebar clips the TAIL.
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w6:p1" HOTLINE_HERDR_PLACEMENT=tab \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" \
+        --label "audit the entire release runbook end to end" 2>/dev/null)
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+log=$(tr -d '\\' < "$t/herdr.log")
+nonce=$(cat "$cd_path/call_id.txt" 2>/dev/null || true)
+label=$(sed -n 's/.*--label \([^ ]*\).*/\1/p' <<<"$log" | head -1)
+[[ "$label" == "${nonce: -6}-"* && ${#label} -le 20 ]]
+check "an over-long label is truncated to the budget with the nonce still leading" $? \
+  "label='$label' (${#label} chars) nonce='$nonce'"
+
+# HOTLINE_HERDR_TAB_LABEL still outranks --label: it is the escape hatch for a
+# shape the standard one does not offer, nonce lead included.
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w6:p1" HOTLINE_HERDR_PLACEMENT=tab \
+      HOTLINE_HERDR_TAB_LABEL="boss-1-review" \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" --label "fix 500s" 2>/dev/null)
+log=$(tr -d '\\' < "$t/herdr.log")
+[[ "$log" == *"--label boss-1-review"* && "$log" != *"fix-500s"* ]]
+check "HOTLINE_HERDR_TAB_LABEL outranks --label" $? "herdr calls: $log"
+
+# A SPLIT has no tab of its own, so the label cannot name one there — it reaches
+# the pane's TERMINAL TITLE instead, through the session name. CONTRACT GUARD on
+# the first half: a split must never create or rename a tab, because the only tab
+# in reach is the caller's.
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" --label "fix 500s" \
+        --name "hotline: fix 500s (work_order)" 2>/dev/null)
+! grep -q "tab create\|tab rename" "$t/herdr.log" 2>/dev/null
+check "a split placement creates and renames no tab for its label" $? \
+  "herdr calls: $(tr -d '\\' < "$t/herdr.log")"
+
+# --- --name reaches `claude -n`, which IS how a split pane gets named ---------
+# claude publishes its session name as the terminal title and herdr renders that
+# live, so a pane with no tab still reads `hotline: <label> (<mode>)`. The launcher
+# built CLAUDE_ARGS with no `-n` at all before, which left a split naming nothing.
+log=$(tr -d '\\' < "$t/herdr.log")
+[[ "$log" == *"-n hotline: fix 500s (work_order)"* ]]
+check "--name is forwarded to the callee's claude as -n, verbatim" $? "herdr calls: $log"
+# THE AGENT NAME IS NOT THE SESSION NAME. Slugging a session-ish string into the
+# agent name gives every call in a run the same slug, which is the one thing that
+# name exists not to be (claude-plugins-hukk).
+agent=$(sed -n 's/.*agent start \([^ ]*\).*/\1/p' <<<"$log" | head -1)
+[[ "$agent" == hotline-target-* ]]
+check "…while the agent name stays the TARGET's dir slug, untouched by it" $? \
+  "agent='$agent'"
+
+# NO --name: no `-n`, rather than an empty one that would title the pane "".
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>/dev/null)
+! grep -q -- ' -n ' <(tr -d '\\' < "$t/herdr.log")
+check "no --name passes no -n at all" $? "herdr calls: $(tr -d '\\' < "$t/herdr.log")"
 
 # --- placement=workspace, label ABSENT: create it, then tab into it --------
 t=$(new_env)
@@ -1806,6 +1919,9 @@ echo ""
 echo "5. dial.sh selection and refusals:"
 # ===========================================================================
 
+# --label is REQUIRED by dial.sh, so the helper supplies a default FIRST — a case
+# that passes its own --label comes later in argv and wins, since the parse loop
+# assigns on every occurrence.
 dial() {  # dial <scratch> <extra-env...> -- <dial args...>
   local t="$1"; shift
   local envs=()
@@ -1815,7 +1931,7 @@ dial() {  # dial <scratch> <extra-env...> -- <dial args...>
       HERDR_STATE="$t/state" CMUX_LOG="$t/cmux.log" SSH_LOG="$t/ssh.log" \
       HOTLINE_CALLER_SESSION_ID="caller-dial-1" \
       HOTLINE_PENDING_DIR="$t/pending" \
-      ${envs[@]+"${envs[@]}"} bash "$DIAL" "$@" 2>"$t/err.txt"
+      ${envs[@]+"${envs[@]}"} bash "$DIAL" --label "probe label" "$@" 2>"$t/err.txt"
 }
 
 # SIDE IS ACCEPTED, because it is what herdr already does: every callee is hosted
@@ -2353,7 +2469,7 @@ check "…with no superseded-host cleanup: the same agent is reused, so nothing 
    && -n "$(jq -r '.call_id // empty' <<<"$out" 2>/dev/null)" ]]
 check "…keeping .surface_ref / .remote_session_id / .call_id stable in shape" $? "out=$out"
 [[ "$(jq -r '.fallbacks | length' <<<"$out" 2>/dev/null)" == "0" ]]
-check "…and recording no fallback, because nothing was worked around" $? "out=$out"
+check "…and working nothing around: no fallbacks at all" $? "out=$out"
 # The proof tier herdr-reuse-agent.sh reported, forwarded like the cmux twin's. A
 # reader comparing the two transports cannot tell a dropped field from a delivery
 # nothing could prove.
@@ -2380,6 +2496,51 @@ conn() { jq -r --arg t "$(cd "$t/target" && pwd -P)" ".connections[\$t].$1 // \"
    && "$(conn surface_ref)" == "$CACHED_AGENT" && "$(conn last_call_id)" == "$NEW_NONCE" ]]
 check "…and the cache bumps the exchange while keeping the same session and agent" $? \
   "registry: $(cat "$REG" 2>/dev/null)"
+
+# --- a follow-up's --label is IGNORED, and nothing is renamed -----------------
+# The callee keeps the name first contact gave it: a label typed against "and now
+# step 2" is worse than the one chosen when the job was described in full. And the
+# tab could not be renamed safely in any case — herdr's default placement is a
+# SPLIT, whose pane sits in the CALLER's tab, so a rename off the live agent would
+# retitle the caller's own work.
+t=$(new_env)
+stage_cache "$t" "$CACHED_SID" "$CACHED_AGENT"
+wrap_herdr_transcript "$t" "$CACHED_SID"
+out=$(dial "$t" "HERDR_PANE_ID=w1:p1" "HERDR_STUB_AGENT_ANY=1" \
+        "HERDR_STUB_AGENT_TAB=w1:t9" "HERDR_STUB_TAB_PANE_COUNT=1" \
+        -- --target "$t/target" --mode work_order --prompt "and now step 2" \
+           --transport herdr --detached --label "step 2 of 3")
+log=$(tr -d '\\' < "$t/herdr.log")
+[[ "$(jq -r '.status' <<<"$out" 2>/dev/null)" == "connected" ]]
+check "a herdr follow-up carrying --label still connects" $? \
+  "out=$out stderr=$(cat "$t/err.txt")"
+# Dropped SILENTLY — `.fallbacks` logs workarounds, and a clean reuse worked around
+# nothing. An entry here would fire on every follow-up.
+[[ "$(jq -r '.fallbacks | length' <<<"$out" 2>/dev/null)" == "0" ]]
+check "…recording nothing about the ignored label: a clean reuse stays fallbacks:[]" $? "out=$out"
+# CONTRACT GUARD. The rename plumbing is gone, so this absence IS the feature: it
+# passes today and fails the moment a follow-up rename comes back. The stub is
+# staged with a rename-able tab (pane_count 1) on purpose, so nothing but the code
+# under test can make this pass.
+! grep -qE 'tab rename|tab get' <(printf '%s' "$log")
+check "…renaming nothing, and not even asking herdr about the tab" $? "herdr calls: $log"
+
+# A follow-up with NO --label never reaches the reuse path: the args gate refuses it
+# first, because whether a dial is first contact is not known when argv is read.
+t=$(new_env)
+stage_cache "$t" "$CACHED_SID" "$CACHED_AGENT"
+wrap_herdr_transcript "$t" "$CACHED_SID"
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" CMUX_LOG="$t/cmux.log" SSH_LOG="$t/ssh.log" \
+      HOTLINE_CALLER_SESSION_ID="caller-dial-1" HOTLINE_PENDING_DIR="$t/pending" \
+      bash "$DIAL" --target "$t/target" --mode work_order --prompt "and now step 2" \
+        --transport herdr --detached 2>"$t/err.txt")
+[[ "$(jq -r '.status' <<<"$out" 2>/dev/null)" == "error" \
+   && "$(jq -r '.stage' <<<"$out" 2>/dev/null)" == "args" ]]
+check "a herdr follow-up with no --label is refused at the args gate" $? "out=$out"
+[[ ! -s "$t/herdr.log" ]]
+check "…reaching no herdr call at all, so re-running the fixed command is safe" $? \
+  "herdr calls: $(cat "$t/herdr.log" 2>/dev/null)"
 
 # --- the cached agent has died → a fresh launch, said out loud ---------------
 t=$(new_env)
@@ -3334,7 +3495,7 @@ remote_dial() {  # remote_dial <scratch> <extra-env...> -- <dial args...>
       HERDR_STATE="$t/state" CMUX_LOG="$t/cmux.log" SSH_LOG="$t/ssh.log" \
       HOTLINE_CALLER_SESSION_ID="caller-remote-1" \
       HOTLINE_PENDING_DIR="$t/pending" \
-      ${envs[@]+"${envs[@]}"} bash "$DIAL" "$@" 2>"$t/err.txt"
+      ${envs[@]+"${envs[@]}"} bash "$DIAL" --label "probe label" "$@" 2>"$t/err.txt"
 }
 
 # --- The target is resolved on the REMOTE box ---------------------------------

@@ -1,7 +1,7 @@
 ---
 name: hotline-dial
 description: "Call another Claude Code workspace — quick calls, work orders, conference calls. 'Call/dial/message/delegate to <workspace or project>'. Also dials a workspace on ANOTHER machine over SSH (--remote <ssh-target>, herdr on that box)."
-argument-hint: "[--headless] [--herdr] [--remote <ssh-target>] [--detached] [--window <name|ref>] [workspace] [task/question...]"
+argument-hint: "--label <2-4 words> [--headless] [--herdr] [--remote <ssh-target>] [--detached] [--window <name|ref>] [workspace] [task/question...]"
 allowed-tools: Bash, ListAgents, SendMessage
 ---
 
@@ -21,6 +21,7 @@ status it returns.
 - **`--headless`**: force the headless transport (`claude -p`) for this dial even when cmux is up. Debugging the headless path, A/B-ing transports, or wanting `claude -p`'s structured output. Costs programmatic-usage credit; the cmux default doesn't. → `--headless`
 - **`--detached`** / **`--new-workspace`**: spawn the callee in a disconnected new workspace tab instead of a side-by-side surface. The tab auto-closes once the response is captured, so nothing is left to watch or clean up. → `--placement detached`
 - **`--window <name|ref>`**: land the callee as a surface in a specific cmux window (find-or-create), for grouping workers by project. A `window:<n>` ref targets that window; a bare name reuses the window holding a workspace titled `<name>`. Wins over `--detached` if both are given. → `--window <name|ref>`
+- **`--label <text>`** — **REQUIRED on every dial**, and normally yours to write rather than the user's: 2-4 words naming what this callee is *doing*, e.g. `fix-hotline-titles`, `review pr 2393`, `audit the cache gate`. It becomes the callee's session name, which is what you read in the cmux tab strip — `◑ hotline: fix-hotline-titles (work_order)`, glyph and all. Nothing else tells two callees in one repo apart. Missing, empty, or whitespace-only is an args error. On a **follow-up** it is ignored: the callee keeps the name first contact gave it. → `--label <text>`
 - **`--herdr`**: host the callee as a **herdr agent** instead of a cmux surface — a persistent pane owned by the herdr server, so the callee **survives a detach, a closed lid, or a dropped SSH session**. That is the reason to ask for it: a long work order you do not want tied to the life of a window. Requires herdr running, here or — with `--remote` below — on another box. Takes any mode, including `conference`, and either the side or detached placement (herdr splits a pane off yours for both). → `--transport herdr`
 - **`--remote <ssh-target>`**: run the callee **on another box** — herdr splits a pane and starts claude *there*, and hotline reads its answer back over ssh. For work that belongs on that machine: its checkout, its GPU, its network. It **selects herdr on its own** (nothing else can host anywhere but here) and is detached by nature, so `--remote <target>` alone is the whole invocation. Needs a non-interactive ssh hop plus herdr *and* claude on that box; if any of that is missing the dial is an **error**, never a quiet local call. → `--remote <ssh-target>`
 
@@ -83,6 +84,7 @@ HOTLINE_PROMPT_EOF
 bash "$PLUGIN_ROOT/skills/dial/scripts/dial.sh" \
   --target "<the user's exact words for the target>" \
   --mode work_order \
+  --label "<2-4 word slug of the task>" \
   --prompt-file "$PROMPT_FILE"
 ```
 
@@ -90,14 +92,15 @@ The quoted heredoc delimiter means the message is copied verbatim — no quoting
 escaping, or `jq` hazards, however long or gnarly it is.
 
 Flags: `--mode quick|work_order|conference` (required),
+`--label <text>` (required — 2-4 words naming what the callee is doing),
 `--prompt-file <path>` (or `--prompt <text>` for a one-liner),
 `--headless`, `--transport cmux|herdr|headless`, `--remote <ssh-target>`,
 `--placement side|detached`,
 `--window <name|ref>`, `--resume <session-id>` `[--no-fork]`,
 `--refresh-identity`,
 `--fresh` (ignore the cached session for this target and start a new one —
-contradicts `--resume`), `--tools <list>`, `--boot-timeout <seconds>`,
-`--caller-session <id>`.
+contradicts `--resume`), `--tools <list>`,
+`--boot-timeout <seconds>`, `--caller-session <id>`.
 
 Run `dial.sh --help` for the full contract.
 
@@ -338,6 +341,39 @@ the cache at it (`.fallbacks` records `session-cache→fresh(<abandoned id>)`).
 A plain re-dial is for continuing a conversation; `--fresh` is for starting
 one in the same workspace with a new brain.
 
+**Name the callee: `--label` is required.** 2-4 words for what the callee is
+*doing*, not where it lives — `fix-hotline-titles`, `review pr 2393`, `audit the
+cache gate`. The directory is the one thing every callee in a run already shares,
+so it is the one thing that cannot tell them apart.
+
+**You write the label**, from the work order you are about to send: the issue id
+it names, or the verb phrase at the top of it. The user will rarely type one, and
+there is no default to fall back on — an unlabelled dial is refused.
+
+Where it shows up:
+
+- **The cmux tab strip**, via the callee's session name. claude publishes its
+  session name as the terminal title and cmux renders that live, so the tab reads
+  `◑ hotline: review pr 2393 (work_order)` — activity glyph in front, changing as
+  the callee works. Nothing here pins a static title, precisely so that glyph
+  survives: a pinned title outranks claude's own for the life of the tab, and
+  losing the glyph loses how you spot a callee that is stuck or waiting.
+- **A detached callee's workspace name**, `hotline: <label>` — a detached
+  placement has no tab inside the caller's window, so the workspace is what the
+  strip shows.
+- **The herdr sidebar's tab label**, for the `tab` and `workspace` placements: the
+  call nonce's last 6 characters, then the label.
+- **A herdr split pane's terminal title**, the same session name as above. A split
+  has no tab of its own to label, but it does have a title.
+
+Missing, empty, or whitespace-only is an **args error**, refused before anything
+with a side effect — including on a follow-up, because whether a dial is first
+contact is not known when its arguments are read. A **follow-up ignores** the
+label, silently: the callee keeps the name first contact gave it, since a name
+re-typed against "and now step 2" would be worse than the one chosen when the job
+was described in full. Nothing lands in `.fallbacks` for it — a clean reuse worked
+around nothing, and `first_contact: false` already says the value went unused.
+
 **A stale-looking candidate list.** If `needs_disambiguation` candidates carry
 empty or obviously outdated `identity` blobs, re-running with
 `--refresh-identity` regenerates the resolved target's identity cache before the
@@ -525,10 +561,12 @@ above still does that:
   hosts the callee in, looked up by label and created if no workspace answers to it.
   Required for that placement, ignored by the other two. One label per group, chosen
   by the caller, is how a run's callees end up together.
-- **`HOTLINE_HERDR_TAB_LABEL=<text>`** — the callee's tab label, for a `tab` or
-  `workspace` placement. Defaults to the call nonce's last 6 characters followed by
-  the target directory, 20 characters in all: herdr's sidebar truncates the tail, and
-  a run's callees usually share one repo, so the unique token leads.
+- **`HOTLINE_HERDR_TAB_LABEL=<text>`** — the callee's tab label VERBATIM, for a
+  `tab` or `workspace` placement. The escape hatch for a shape `--label` does not
+  offer; `--label` is the flag to reach for, and it produces the standard shape — the
+  call nonce's last 6 characters, then the label. herdr's sidebar truncates the tail
+  and a run's callees usually share one repo, so the unique token leads. The budget
+  and its split live in `herdr_tab_label` (`scripts/herdr-state.sh`).
 - **`HOTLINE_HERDR_SPLIT_DIRECTION=right|down`** — which way a `split` placement
   goes (default `right`).
 - **`HOTLINE_HERDR_PANE_SETTLE=<seconds>`** — pause before starting the agent in a

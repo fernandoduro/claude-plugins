@@ -235,11 +235,24 @@ EOF
   chmod +x "$1/cmux"
 }
 
-# Stands in for cmux-cli's open-side-surface.sh.
+# Stands in for cmux-cli's open-side-surface.sh. Records its own argv when
+# $SIDE_OPENER_LOG is set, and reflects --title back as title_status/surface_title
+# exactly as the real opener does — hotline passes none, and §15 asserts that
+# absence against this log, so the stub has to be able to report one.
 make_side_opener() {
   cat > "$1" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' '{"surface_ref":"surface:777","surface_id":"SURFACE-UUID-777","pane_ref":"pane:55","pane_id":"PANE-UUID-55","workspace_ref":"workspace:5","mode":"new-surface","ready":"ready"}'
+[[ -n "${SIDE_OPENER_LOG:-}" ]] && printf '%s\n' "$*" >> "$SIDE_OPENER_LOG"
+TITLE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in --title) TITLE="${2:-}"; shift 2 ;; *) shift ;; esac
+done
+jq -nc --arg t "$TITLE" --arg st "${SIDE_OPENER_TITLE_STATUS:-}" \
+  '{surface_ref:"surface:777", surface_id:"SURFACE-UUID-777",
+    pane_ref:"pane:55", pane_id:"PANE-UUID-55", workspace_ref:"workspace:5",
+    mode:"new-surface", ready:"ready",
+    surface_title: (if $t == "" then null else $t end),
+    title_status: (if $st != "" then $st elif $t == "" then "unset" else "applied" end)}'
 EOF
   chmod +x "$1"
 }
@@ -338,7 +351,7 @@ make_cmux "$t/bin"; make_side_opener "$t/side.sh"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-1111" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "run the suite" --boot-timeout 5 2>"$t/err.txt")
 rc=$?
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
@@ -446,7 +459,7 @@ make_claude "$t/bin"; make_ps "$t/bin"
 mkdir -p "$t/home/.claude/projects/testproj"
 rm -f "$STRAY_SESSION_CACHE"
 
-DIAL_ARGS=(--target "$t/target" --mode quick --headless
+DIAL_ARGS=(--target "$t/target" --mode quick --headless --label "probe label"
            --prompt "what branch are you on?" --boot-timeout 8)
 run_replay() {
   ( cd "$t/work" && PATH="$t/bin:$PATH" HOME="$t/home" \
@@ -513,7 +526,7 @@ jq -n --arg a "$t/home/alpha" --arg b "$t/home/beta" \
   '{alpha:$a, beta:$b}' > "$t/home/.dirmap.json"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-3333" \
   HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "the mystery workspace" --mode quick \
+  bash "$DIAL" --target "the mystery workspace" --mode quick --label "probe label" \
     --prompt "hello?" 2>"$t/err.txt")
 rc=$?
 
@@ -540,7 +553,7 @@ out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/nope.sh" HOTLINE_PLUGINS_DIR="$t/empty" \
   HOTLINE_PENDING_DIR="$t/pending" \
   FAKE_CLAUDE_SESSION_ID="44444444-4444-4444-8444-444444444444" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "fold me in" --boot-timeout 8 2>"$t/err.txt")
 rc=$?
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
@@ -572,7 +585,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
   --mode work_order --surface "SURFACE-UUID-777"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-5555" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "one more thing" --boot-timeout 5 2>"$t/err.txt")
 rc=$?
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
@@ -651,7 +664,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-6666" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "please continue" --boot-timeout 5 2>"$t/err.txt")
 rc=$?
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
@@ -710,7 +723,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-7777" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt-file "$t/msg.txt" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -770,7 +783,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-6b" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "single line, but nowhere to type it" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -781,6 +794,34 @@ check "a follow-up with no cached surface records the skip" $? "out=$out"
 
 [[ "$(jq -r .first_contact <<<"$out")" == "false" && "$(jq -r .status <<<"$out")" == "connected" ]]
 check "…and still completes as a follow-up via the fresh path" $? "out=$out"
+
+# The same fall-through, DETACHED: the label still has to reach the new workspace.
+# FIRST_CONTACT stays false here — it answers "did this dial have a cached session"
+# and one existed — but the launch it falls through to opens a BRAND-NEW workspace,
+# and a detached callee's workspace name is the only name the tab strip has for it.
+# Gating --label on FIRST_CONTACT named that workspace a bare `hotline`.
+t=$(new_env); note_leak "$t"
+make_cmux "$t/bin"
+printf 'some earlier output\n\xe2\x9d\xaf\xc2\xa0\nClaude Code v2.1.221\n' > "$t/screen.txt"
+HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/target" \
+  --caller-session "caller-6b2" --session "6b2b6b2b-6b2b-4b2b-8b2b-6b2b6b2b6b2b" \
+  --mode work_order
+out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
+  HOTLINE_CALLER_SESSION_ID="caller-6b2" HOTLINE_PENDING_DIR="$t/pending" \
+  bash "$DIAL" --target "$t/target" --mode work_order --placement detached \
+    --label "probe label" --prompt "and now step 2" --boot-timeout 8 2>"$t/err.txt")
+call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+[[ -n "$call_dir" ]] && note_leak "$call_dir"
+
+[[ "$(jq -r .first_contact <<<"$out")" == "false" \
+   && "$(jq -r .placement <<<"$out")" == "detached" ]] \
+  && jq -e '.fallbacks | index("surface-reuse-skipped(no-cached-surface)")' <<<"$out" >/dev/null 2>&1
+check "a detached follow-up falls through to a fresh workspace (first_contact false)" $? \
+  "out=$out stderr=$(cat "$t/err.txt")"
+
+grep -q -- 'new-workspace .*--name hotline: probe label' "$t/cmux_calls"
+check "…and that workspace carries the label, not a bare 'hotline'" $? \
+  "cmux calls: $(cat "$t/cmux_calls" 2>/dev/null)"
 
 # ===========================================================================
 # 6c. A follow-up that ends with NO surface CLEARS the cached one
@@ -807,7 +848,7 @@ out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/nope.sh" HOTLINE_PLUGINS_DIR="$t/empty" \
   HOTLINE_PENDING_DIR="$t/pending" \
   FAKE_CLAUDE_SESSION_ID="6c6c6c6c-6c6c-4c6c-8c6c-6c6c6c6c6c6c" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "fold me into headless" --boot-timeout 8 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -843,7 +884,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-6d" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side-degrade.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "degrade me to detached" --boot-timeout 8 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -881,7 +922,7 @@ chmod +x "$t/side-notfound.sh"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-6d2" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side-notfound.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "not_found should degrade too" --boot-timeout 8 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -915,7 +956,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" CMUX_SOCKET_PATH="$REJECT_STALE_SOCK" \
   HOTLINE_CALLER_SESSION_ID="caller-6e" HOTLINE_CLEANUP_SETTLE=0 \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "carry on please" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -946,7 +987,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-6f" HOTLINE_CLEANUP_SETTLE=0 \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "carry on please" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -972,7 +1013,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" CMUX_SOCKET_PATH="$REJECT_STALE_SOCK" \
   HOTLINE_CALLER_SESSION_ID="caller-6h" HOTLINE_CLEANUP_SETTLE=0 \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "carry on please" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -995,7 +1036,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" CMUX_SOCKET_PATH="$REJECT_STALE_SOCK" \
   HOTLINE_CALLER_SESSION_ID="caller-6g" HOTLINE_CLOSE_SUPERSEDED=0 \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "carry on please" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -1032,7 +1073,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-6j" HOTLINE_CLEANUP_SETTLE=0 \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order --fresh \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" --fresh \
     --prompt "review the branch with no prior context" --boot-timeout 5 2>"$t/err.txt")
 rc=$?
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
@@ -1098,7 +1139,7 @@ make_cmux "$t/bin"; make_side_opener "$t/side.sh"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-6j-b" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order --fresh \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" --fresh \
     --prompt "nothing to ignore here" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -1121,7 +1162,7 @@ for order in "--fresh --resume 12345678-1234-4234-8234-123456789abc" \
              "--resume 12345678-1234-4234-8234-123456789abc --fresh"; do
   o=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-6j-c" \
       HOTLINE_PENDING_DIR="$t/pending" \
-      timeout 10 bash "$DIAL" --target "$t/target" --mode quick --prompt x \
+      timeout 10 bash "$DIAL" --target "$t/target" --mode quick --label "probe label" --prompt x \
         $order 2>/dev/null)
   rc=$?
   [[ "$rc" -eq 1 && "$(jq -r '.stage // empty' <<<"$o" 2>/dev/null)" == "args" ]] \
@@ -1139,7 +1180,7 @@ make_cmux "$t/bin"; make_side_opener "$t/side.sh"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-8888" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode conference \
+  bash "$DIAL" --target "$t/target" --mode conference --label "probe label" \
     --prompt "let us pair on this" 2>"$t/err.txt")
 rc=$?
 # cmux-call.sh's launch script self-deletes only when executed; ours never is.
@@ -1206,7 +1247,7 @@ make_cmux "$t/bin"; make_side_opener "$t/side.sh"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-9999" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "never boots" --boot-timeout 1 2>"$t/err.txt")
 rc=$?
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
@@ -1226,7 +1267,7 @@ check "boot errors keep the call_dir so its diagnostics are readable" $? "out=$o
 t=$(new_env); note_leak "$t"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-aaaa" \
   HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/does-not-exist-anywhere" --mode quick \
+  bash "$DIAL" --target "$t/does-not-exist-anywhere" --mode quick --label "probe label" \
     --prompt "hi" 2>"$t/err.txt")
 rc=$?
 [[ "$rc" -eq 1 && "$(jq -r .stage <<<"$out")" == "resolve" ]]
@@ -1256,7 +1297,7 @@ for flag in --target --mode --prompt-file --prompt --placement --window \
             --tools --resume --caller-session --boot-timeout; do
   o=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-cccc" \
       HOTLINE_PENDING_DIR="$t/pending" \
-      timeout 5 bash "$DIAL" --mode quick --prompt x "$flag" 2>/dev/null)
+      timeout 5 bash "$DIAL" --mode quick --label "probe label" --prompt x "$flag" 2>/dev/null)
   rc=$?
   [[ "$rc" -eq 1 && "$(jq -r '.stage // empty' <<<"$o" 2>/dev/null)" == "args" ]]
   check "trailing bare $flag errors immediately instead of spinning" $? \
@@ -1265,14 +1306,14 @@ done
 
 o=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-cccc" \
     HOTLINE_PENDING_DIR="$t/pending" \
-    timeout 5 bash "$DIAL" --target /tmp --mode quick --prompt-fil /tmp/x 2>/dev/null)
+    timeout 5 bash "$DIAL" --target /tmp --mode quick --label "probe label" --prompt-fil /tmp/x 2>/dev/null)
 [[ "$(jq -r '.stage // empty' <<<"$o" 2>/dev/null)" == "args" ]] \
   && grep -q 'prompt-fil' <<<"$o"
 check "a misspelled flag errors and names itself (never silently ignored)" $? "out=$o"
 
 o=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-cccc" \
     HOTLINE_PENDING_DIR="$t/pending" \
-    timeout 5 bash "$DIAL" --target /tmp --mode quick --prompt x --boot-timeout soon 2>/dev/null)
+    timeout 5 bash "$DIAL" --target /tmp --mode quick --label "probe label" --prompt x --boot-timeout soon 2>/dev/null)
 [[ "$(jq -r '.stage // empty' <<<"$o" 2>/dev/null)" == "args" ]]
 check "a non-numeric --boot-timeout is rejected before it reaches arithmetic" $? "out=$o"
 
@@ -1282,7 +1323,7 @@ check "a non-numeric --boot-timeout is rejected before it reaches arithmetic" $?
 o=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-cccc" \
     HOTLINE_PENDING_DIR="$t/pending" \
     HOTLINE_CLAUDE_APPEND_SYSTEM_PROMPT_FILE="$t/no-such-prompt.txt" \
-    timeout 5 bash "$DIAL" --target /tmp --mode quick --prompt x 2>/dev/null)
+    timeout 5 bash "$DIAL" --target /tmp --mode quick --label "probe label" --prompt x 2>/dev/null)
 [[ "$(jq -r '.stage // empty' <<<"$o" 2>/dev/null)" == "args" ]] \
   && grep -q 'HOTLINE_CLAUDE_APPEND_SYSTEM_PROMPT_FILE' <<<"$o"
 check "an unreadable HOTLINE_CLAUDE_APPEND_SYSTEM_PROMPT_FILE fails at args and names itself" $? "out=$o"
@@ -1293,7 +1334,7 @@ printf 'be terse.' > "$t/real-prompt.txt"
 o=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-cccc" \
     HOTLINE_PENDING_DIR="$t/pending" \
     HOTLINE_CLAUDE_APPEND_SYSTEM_PROMPT_FILE="$t/real-prompt.txt" \
-    timeout 10 bash "$DIAL" --target "$t/nope-not-here" --mode quick --prompt x 2>/dev/null)
+    timeout 10 bash "$DIAL" --target "$t/nope-not-here" --mode quick --label "probe label" --prompt x 2>/dev/null)
 [[ "$(jq -r '.stage // empty' <<<"$o" 2>/dev/null)" != "args" ]]
 check "a readable HOTLINE_CLAUDE_APPEND_SYSTEM_PROMPT_FILE passes the args gate" $? "out=$o"
 
@@ -1301,7 +1342,7 @@ check "a readable HOTLINE_CLAUDE_APPEND_SYSTEM_PROMPT_FILE passes the args gate"
 for order in "--placement detached --window winname" "--window winname --placement detached"; do
   o=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-cccc" \
       HOTLINE_PENDING_DIR="$t/pending" \
-      timeout 10 bash "$DIAL" --target "$t/nope-not-here" --mode quick --prompt x \
+      timeout 10 bash "$DIAL" --target "$t/nope-not-here" --mode quick --label "probe label" --prompt x \
         $order 2>/dev/null)
   # Reaching the resolve stage proves placement validated as `window` (a stray
   # `detached` would too, so pair this with the args-stage check below).
@@ -1313,7 +1354,7 @@ done
 for order in "--placement bogus --window winname" "--window winname --placement bogus"; do
   o=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-cccc" \
       HOTLINE_PENDING_DIR="$t/pending" \
-      timeout 10 bash "$DIAL" --target "$t/nope-not-here" --mode quick --prompt x \
+      timeout 10 bash "$DIAL" --target "$t/nope-not-here" --mode quick --label "probe label" --prompt x \
         $order 2>/dev/null)
   [[ "$(jq -r '.stage // empty' <<<"$o" 2>/dev/null)" != "args" ]]
   check "--window overrides an unusable --placement ($order)" $? "out=$o"
@@ -1331,7 +1372,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-conf" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode conference \
+  bash "$DIAL" --target "$t/target" --mode conference --label "probe label" \
     --prompt "next thought" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -1366,7 +1407,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-conf2" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode conference \
+  bash "$DIAL" --target "$t/target" --mode conference --label "probe label" \
     --prompt "carry on" 2>"$t/err.txt")
 conf_launch=$(grep -oE '/tmp/hotline-cmux-launch-[A-Za-z0-9]+' "$t/send_calls" 2>/dev/null | head -1)
 [[ -n "$conf_launch" ]] && note_leak "$conf_launch"
@@ -1424,7 +1465,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-dddd" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "reason has newlines" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir" && launch_script_of "$call_dir" >/dev/null
@@ -1454,7 +1495,7 @@ printf 'SESSION_FINGERPRINT_STALE-NEVER-PLANTED\n3\n1000000000\n' \
 out=$( cd "$t/work" && PATH="$t/bin:$PATH" HOME="$t/home" \
   FAKE_CLAUDE_PID="$FAKE_CLAUDE_PID" HOTLINE_PENDING_DIR="$t/pending" \
   "${STRIP_NATIVE_ID[@]}" \
-  bash "$DIAL" --target "$t/target" --mode quick --headless --prompt "hi" 2>/dev/null )
+  bash "$DIAL" --target "$t/target" --mode quick --label "probe label" --headless --prompt "hi" 2>/dev/null )
 rc=$?
 [[ "$rc" -eq 2 && "$(jq -r .status <<<"$out")" == "replay" \
    && "$(jq -r .attempt <<<"$out")" == "1" ]]
@@ -1468,7 +1509,7 @@ printf 'SESSION_FINGERPRINT_FRESH-BUT-NEVER-PLANTED\n3\n%s\n' "$(date +%s)" \
 out=$( cd "$t/work" && PATH="$t/bin:$PATH" HOME="$t/home" \
   FAKE_CLAUDE_PID="$FAKE_CLAUDE_PID" HOTLINE_PENDING_DIR="$t/pending" \
   "${STRIP_NATIVE_ID[@]}" \
-  bash "$DIAL" --target "$t/target" --mode quick --headless --prompt "hi" 2>/dev/null )
+  bash "$DIAL" --target "$t/target" --mode quick --label "probe label" --headless --prompt "hi" 2>/dev/null )
 rc=$?
 [[ "$rc" -eq 1 && "$(jq -r .stage <<<"$out")" == "identity" ]]
 check "an exhausted retry budget gives up with an identity error" $? "rc=$rc out=$out"
@@ -1497,7 +1538,7 @@ out=$( cd "$t/work" && PATH="$t/bin:$PATH" HOME="$t/home" \
   FAKE_CLAUDE_SESSION_ID="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" \
   env -u HOTLINE_CALLER_SESSION_ID -u CODEX_THREAD_ID \
       CLAUDE_CODE_SESSION_ID="$NATIVE_SID" \
-  bash "$DIAL" --target "$t/target" --mode quick --headless \
+  bash "$DIAL" --target "$t/target" --mode quick --label "probe label" --headless \
     --prompt "who am I talking to?" --boot-timeout 8 2>"$t/err.txt" )
 rc=$?
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
@@ -1538,7 +1579,7 @@ out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   CMUX_SOCKET_PATH="$NO_PASTE_SOCK" \
   HOTLINE_CALLER_SESSION_ID="caller-cap" HOTLINE_PENDING_DIR="$t/pending" \
   FAKE_CLAUDE_SESSION_ID="$FAKE_CLAUDE_SESSION_ID" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "no paste available here" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -1570,7 +1611,7 @@ out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   CMUX_SOCKET_PATH="$NOECHO_SOCK" SOCK_ECHO_FILE="" \
   HOTLINE_CALLER_SESSION_ID="caller-undelivered" HOTLINE_PENDING_DIR="$t/pending" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "this one never lands" --boot-timeout 5 2>"$t/err.txt")
 rc=$?
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
@@ -1610,7 +1651,7 @@ ARGV_SENTINEL="PROMPT-ON-ARGV-SENTINEL-$$"
 out=$(PATH="$t/bin2:$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-argv" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "$ARGV_SENTINEL" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -1666,7 +1707,7 @@ out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   CMUX_SOCKET_PATH="$NOECHO_SOCK" SOCK_ECHO_FILE="" \
   HOTLINE_CALLER_SESSION_ID="caller-dup" HOTLINE_PENDING_DIR="$t/pending" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt-file "$t/msg.txt" --boot-timeout 5 2>"$t/err.txt")
 rc=$?
 DUP_CALL_DIR=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
@@ -1705,7 +1746,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-presend" HOTLINE_PENDING_DIR="$t/pending" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "refused before anything was sent" --boot-timeout 5 2>"$t/err.txt")
 [[ -n "$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)" ]] && note_leak "$(jq -r .call_dir <<<"$out")"
 [[ "$(jq -r .status <<<"$out")" == "connected" ]] \
@@ -1761,7 +1802,7 @@ out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-audit-1" HOTLINE_PENDING_DIR="$t/pending" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" \
   HOTLINE_CLAUDE_APPEND_SYSTEM_PROMPT_FILE="$SP_FILE" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "$ARGV_SENTINEL cmux first contact" --boot-timeout 5 2>"$t/err.txt")
 call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
 [[ -n "$call_dir" ]] && note_leak "$call_dir"
@@ -1776,7 +1817,7 @@ argv_audit_env "$t"; make_ps "$t/bin"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" \
   HOTLINE_CALLER_SESSION_ID="caller-audit-2" HOTLINE_PENDING_DIR="$t/pending" \
   HOTLINE_CLAUDE_APPEND_SYSTEM_PROMPT_FILE="$SP_FILE" \
-  bash "$DIAL" --target "$t/target" --mode quick --headless \
+  bash "$DIAL" --target "$t/target" --mode quick --label "probe label" --headless \
     --prompt "$ARGV_SENTINEL headless" --boot-timeout 8 2>"$t/err.txt")
 [[ "$(jq -r .status <<<"$out")" == "connected" ]]
 check "argv audit: the headless dial completed" $? "out=$out stderr=$(cat "$t/err.txt")"
@@ -1790,7 +1831,7 @@ out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-audit-3" HOTLINE_PENDING_DIR="$t/pending" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" \
   HOTLINE_CLAUDE_APPEND_SYSTEM_PROMPT_FILE="$SP_FILE" \
-  bash "$DIAL" --target "$t/target" --mode conference \
+  bash "$DIAL" --target "$t/target" --mode conference --label "probe label" \
     --prompt "$ARGV_SENTINEL conference" 2>"$t/err.txt")
 [[ "$(jq -r .status <<<"$out")" == "connected" ]]
 check "argv audit: the conference dial completed" $? "out=$out stderr=$(cat "$t/err.txt")"
@@ -1838,7 +1879,7 @@ make_cmux "$t/bin"; make_claude "$t/bin"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   CMUX_SOCKET_PATH="$SOCKROOT/definitely-not-a-socket" \
   HOTLINE_CALLER_SESSION_ID="caller-nosock" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "no socket here" --boot-timeout 5 2>"$t/err.txt")
 [[ -n "$(jq -r '.call_dir // empty' <<<"$out")" ]] && note_leak "$(jq -r .call_dir <<<"$out")"
 jq -e '.fallbacks | map(startswith("cmux-socket-unreachable→headless")) | any' <<<"$out" >/dev/null 2>&1
@@ -1865,7 +1906,7 @@ if [[ -n "$(PATH="$t/nopy" command -v python3 2>/dev/null)" ]]; then
 else
 out=$(PATH="$t/bin:$t/nopy" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-nopy" HOTLINE_PENDING_DIR="$t/pending" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "no python here" --boot-timeout 5 2>"$t/err.txt")
 [[ -n "$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)" ]] && note_leak "$(jq -r .call_dir <<<"$out")"
 jq -e '.fallbacks | map(startswith("python3-missing→headless")) | any' <<<"$out" >/dev/null 2>&1
@@ -1900,7 +1941,7 @@ HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
   HOTLINE_CALLER_SESSION_ID="caller-stale" HOTLINE_PENDING_DIR="$t/pending" \
   HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" \
-  bash "$DIAL" --target "$t/target" --mode work_order \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "probe label" \
     --prompt "resume into a stale transcript" --boot-timeout 3 2>"$t/err.txt")
 [[ -n "$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)" ]] && note_leak "$(jq -r .call_dir <<<"$out")"
 [[ "$(jq -r '.status // empty' <<<"$out")" == "error" \
@@ -2014,6 +2055,158 @@ for doc in "$HOTLINE_DIR/skills/dial/SKILL.md" "$HOTLINE_DIR/README.md"; do
   grep -qiE 'boot-timeout' "$doc"
   check "$rel ties it to --boot-timeout rather than naming a second number" $? "no --boot-timeout reference"
 done
+
+# ===========================================================================
+# 15. --label is REQUIRED, and it names the callee through the SESSION NAME.
+#
+# claude publishes its `-n` session name as the terminal title and cmux renders
+# that live in the tab strip, glyph included — `◑ hotline: fix 500s (work_order)`.
+# So naming the session names the tab, and nothing has to pin a static title.
+# These cases pin both halves: the requirement, and where the value lands.
+# ===========================================================================
+t=$(new_env); note_leak "$t"
+make_cmux "$t/bin"; make_side_opener "$t/side.sh"
+
+# --- MISSING --label is an args error, refused before any side effect --------
+out=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-nolabel-1" \
+  HOTLINE_PENDING_DIR="$t/pending" \
+  bash "$DIAL" --target "$t/target" --mode work_order \
+    --prompt "do the thing" --boot-timeout 5 2>"$t/err.txt"); rc=$?
+[[ "$rc" -eq 1 && "$(jq -r .status <<<"$out")" == "error" \
+   && "$(jq -r .stage <<<"$out")" == "args" ]]
+check "a dial with no --label is an args error" $? "rc=$rc out=$out"
+[[ "$(jq -r .recovery <<<"$out")" == *'--label "<2-4 word slug of the task>"'* ]]
+check "…and the recovery text names the flag and its shape verbatim" $? "out=$out"
+[[ "$(jq -r .recovery <<<"$out")" == *"cmux tab strip"* ]]
+check "…and says where the label shows up, so the agent knows what it is for" $? \
+  "out=$out"
+
+# NOTHING WAS OPENED. An args refusal costs the caller nothing to retry, and the
+# whole reason the gate sits before the side-effect stages is that re-running the
+# fixed command must be safe.
+[[ ! -s "$t/cmux_calls" ]]
+check "an args refusal reaches no cmux call at all" $? \
+  "cmux calls: $(cat "$t/cmux_calls" 2>/dev/null)"
+
+# --- EMPTY --label is the same refusal --------------------------------------
+# `--label "$VAR"` with an unset VAR is reachable and arrives as a present flag
+# with no value. A presence-only check would pass it and name the callee "".
+for empty_label in "" "   "; do
+  out=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-nolabel-2" \
+    HOTLINE_PENDING_DIR="$t/pending" \
+    bash "$DIAL" --target "$t/target" --mode work_order --label "$empty_label" \
+      --prompt "do the thing" --boot-timeout 5 2>"$t/err.txt"); rc=$?
+  [[ "$rc" -eq 1 && "$(jq -r .stage <<<"$out")" == "args" \
+     && "$(jq -r .recovery <<<"$out")" == *'--label "<2-4 word slug of the task>"'* ]]
+  check "--label '$empty_label' is refused at the same gate, with the same recovery" $? \
+    "rc=$rc out=$out"
+done
+
+# --- THE LABEL REACHES `claude -n`, side placement --------------------------
+t=$(new_env); note_leak "$t"
+make_cmux "$t/bin"; make_side_opener "$t/side.sh"
+: > "$OK_REQUESTS"
+out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
+  HOTLINE_CALLER_SESSION_ID="caller-label-1" SIDE_OPENER_LOG="$t/side_calls" \
+  HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
+  bash "$DIAL" --target "$t/target" --mode work_order --label "fix 500s" \
+    --prompt "audit the timeouts" --boot-timeout 5 2>"$t/err.txt"); rc=$?
+call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+[[ -n "$call_dir" ]] && note_leak "$call_dir"
+launch=$(launch_script_of "$call_dir")
+
+[[ "$rc" -eq 0 && "$(jq -r .status <<<"$out")" == "connected" ]]
+check "a labelled dial connects" $? "rc=$rc out=$out err=$(cat "$t/err.txt" 2>/dev/null)"
+
+# THE WHOLE POINT: the session name is `hotline: <label> (<mode>)` and nothing
+# else. The caller and target directories are recorded in the call registry, the
+# switchboard and dial history — none of which is a 30-character tab.
+# %q-quoted in the launch script, so the expected form is built the same way —
+# a plain substring match would fail on the escaping rather than on the name.
+[[ "$launch" == *"-n $(printf '%q' 'hotline: fix 500s (work_order)')"* ]]
+check "the label IS the session name: 'hotline: <label> (<mode>)', one argv word" $? \
+  "got=$launch"
+[[ "$launch" != *" → "* ]]
+check "…with the caller→callee directory pair dropped from it" $? "got=$launch"
+
+# NO --title, ANYWHERE. A pinned title outranks claude's dynamic one for the life
+# of the tab, which costs the ◑/✳/⏺ activity glyph — the thing that shows a callee
+# is stuck. CONTRACT GUARD: this absence-assertion is the whole feature, so it is
+# meant to pass today and to fail the moment a rename is reintroduced.
+if grep -q -- '--title' "$t/side_calls" 2>/dev/null; then
+  fail "hotline passes NO --title to the side opener" \
+    "side calls: $(cat "$t/side_calls" 2>/dev/null)"
+else
+  pass "hotline passes NO --title to the side opener"
+fi
+# CONTRACT GUARD, same reason: nothing in hotline may pin a tab title.
+if grep -qE 'rename-tab|tab-action' "$t/cmux_calls" 2>/dev/null; then
+  fail "no cmux rename-tab is issued for a label" \
+    "cmux calls: $(cat "$t/cmux_calls" 2>/dev/null)"
+else
+  pass "no cmux rename-tab is issued for a label"
+fi
+[[ ! -e "$call_dir/label_status.txt" ]]
+check "and no label_status.txt is minted — there is no title outcome to report" $? \
+  "call_dir=$call_dir"
+[[ "$(jq -r '.fallbacks | join(" ")' <<<"$out")" != *"label"* ]]
+check "a first-contact label records no fallback" $? "out=$out"
+
+# ===========================================================================
+# 16. A FOLLOW-UP still has to carry --label, and the value is IGNORED.
+#
+# Whether a dial is first contact comes out of the session-cache lookup, hundreds
+# of lines after the arguments are read — so the args gate cannot exempt a
+# follow-up. It requires the flag and the reuse path throws the value away: the
+# callee keeps the name first contact gave it, because a label typed against "and
+# now step 2" is worse than the one chosen when the job was described in full.
+# ===========================================================================
+followup_label_case() {  # followup_label_case <caller-id> <cached-surface> [extra dial args...]
+  local caller="$1" surface="$2"; shift 2
+  t=$(new_env); note_leak "$t"
+  make_cmux "$t/bin"
+  printf 'some earlier output\n\xe2\x9d\xaf\xc2\xa0\n' > "$t/screen.txt"
+  HOME="$t/home" bash "$HOTLINE_DIR/skills/dial/scripts/session-cache.sh" set "$t/target" \
+    --caller-session "$caller" --session "55555555-5555-4555-8555-555555555555" \
+    --mode work_order --surface "$surface" >/dev/null
+  FOLLOWUP_OUT=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
+    HOTLINE_CALLER_SESSION_ID="$caller" HOTLINE_PENDING_DIR="$t/pending" \
+    bash "$DIAL" --target "$t/target" --mode work_order "$@" \
+      --prompt "and now step 2" --boot-timeout 5 2>"$t/err.txt")
+  FOLLOWUP_CMUX_CALLS="$t/cmux_calls"
+  local cd_path
+  cd_path=$(jq -r '.call_dir // empty' <<<"$FOLLOWUP_OUT" 2>/dev/null)
+  [[ -n "$cd_path" ]] && note_leak "$cd_path"
+}
+
+LIVE_SURFACE="aaaa0000-1111-4111-8111-111111111111"
+followup_label_case caller-fu-1 "$LIVE_SURFACE" --label "step 2 of 3"
+[[ "$(jq -r .status <<<"$FOLLOWUP_OUT")" == "connected" \
+   && "$(jq -r .first_contact <<<"$FOLLOWUP_OUT")" == "false" ]]
+check "a follow-up carrying --label still connects" $? "out=$FOLLOWUP_OUT"
+# The value is dropped SILENTLY: `.fallbacks` logs what the wrapper worked around,
+# and a clean reuse worked around nothing. An entry here would fire on every
+# follow-up and teach a reader to skim the array.
+[[ "$(jq -r '.fallbacks | length' <<<"$FOLLOWUP_OUT")" -eq 0 ]]
+check "…recording nothing about the ignored label: a clean reuse stays fallbacks:[]" $? \
+  "out=$FOLLOWUP_OUT"
+# CONTRACT GUARD: a follow-up must not rename the live host. The rename plumbing
+# is gone, so this asserts an absence deliberately — it fails if one comes back.
+if grep -qE 'rename-tab|tab-action' "$FOLLOWUP_CMUX_CALLS" 2>/dev/null; then
+  fail "a follow-up renames nothing, whatever label it carried" \
+    "cmux calls: $(cat "$FOLLOWUP_CMUX_CALLS" 2>/dev/null)"
+else
+  pass "a follow-up renames nothing, whatever label it carried"
+fi
+
+# A follow-up with NO --label is refused BEFORE the cache is read, so it never
+# reaches the reuse path at all: the gate cannot know it is a follow-up.
+followup_label_case caller-fu-2 "$LIVE_SURFACE"
+[[ "$(jq -r .status <<<"$FOLLOWUP_OUT")" == "error" \
+   && "$(jq -r .stage <<<"$FOLLOWUP_OUT")" == "args" ]]
+check "a follow-up with no --label is refused at the args gate like any other dial" $? \
+  "out=$FOLLOWUP_OUT"
+
 
 # ===========================================================================
 if [[ -s "$POISON_LOG" ]]; then

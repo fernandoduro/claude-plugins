@@ -70,14 +70,18 @@
 #
 # Usage:
 #   herdr-call-async.sh --cwd <path> (--prompt <text> | --prompt-file <path>)
-#                       [--tools <list>] [--boot-timeout <seconds>] [--detached]
+#                       [--name <session-name>] [--label <text>] [--tools <list>]
+#                       [--boot-timeout <seconds>] [--detached]
 #   # → {"call_dir":"…","agent":"hotline-…","pane":"w6:p2","session_id":"…"}
 #   #   plus "remote":"<ssh-target>" when $HOTLINE_HERDR_REMOTE hosted it
 #
 # --prompt-file is preferred: it keeps the payload out of argv end to end.
 # --detached is accepted and ignored, and so is a side placement: dial.sh's
 # placement vocabulary only changes what it reports. `--window` never reaches here;
-# dial.sh refuses it. WHERE the callee's pane actually goes is
+# dial.sh refuses it. --label names what the callee is DOING and reaches the tab a
+# tab/workspace placement creates; --name carries the same subject to `claude -n`,
+# which claude publishes as the pane's terminal title — that is what names a SPLIT,
+# which has no tab of its own. WHERE the callee's pane actually goes is
 # $HOTLINE_HERDR_PLACEMENT — a sibling split (the default), its own tab, or a tab
 # in a named group workspace ($HOTLINE_HERDR_WORKSPACE). See the placement block.
 # =============================================================================
@@ -99,6 +103,11 @@ CWD=""
 PROMPT=""
 PROMPT_FILE=""
 ALLOWED_TOOLS="Bash Read Edit Write Grep Glob"
+# What this callee is DOING, for the tab label a tab/workspace placement creates.
+# Never touches the agent name, which stays dir-slugged (claude-plugins-hukk).
+LABEL=""
+# The callee's `claude -n` session name — see CLAUDE_ARGS below for why it matters.
+SESSION_NAME=""
 BOOT_TIMEOUT=""
 RESUME_ID=""
 FORK_SESSION=false
@@ -109,6 +118,8 @@ while [[ $# -gt 0 ]]; do
     --prompt)       PROMPT="$2";        shift 2 ;;
     --prompt-file)  PROMPT_FILE="$2";   shift 2 ;;
     --tools)        ALLOWED_TOOLS="$2"; shift 2 ;;
+    --label)        LABEL="$2";         shift 2 ;;
+    --name)         SESSION_NAME="$2";  shift 2 ;;
     --boot-timeout) BOOT_TIMEOUT="$2";  shift 2 ;;
     --resume)       RESUME_ID="$2";     shift 2 ;;
     --fork-session) FORK_SESSION=true;  shift   ;;
@@ -321,17 +332,15 @@ else
     [[ -z "$HOST_WORKSPACE" ]] && fail_async "herdr pane get $SPLIT_FROM reported no workspace_id: $(printf '%s' "$HERDR_CLI_OUT" | tr -d '\n' | cut -c1-200)"
   fi
 
-  # THE UNIQUE TOKEN LEADS. herdr's sidebar truncates a label's TAIL, and a run's
-  # callees are typically all dialled into the SAME repo — so a directory-first
-  # label renders as fifteen identical tabs. Nonce first, directory after:
-  # 6 + 1 + 13 = 20 characters, which is what the sidebar shows unclipped.
+  # Shape and its reasoning live in herdr_tab_label (herdr-state.sh), which owns
+  # the 20-character budget the README and SKILL.md describe in prose.
+  #
+  # HOTLINE_HERDR_TAB_LABEL still wins over --label. It sets the label VERBATIM,
+  # nonce lead and all, which is the escape hatch for a caller who wants a shape
+  # this does not offer; --label names the subject and gets the standard shape.
   TAB_LABEL="${HOTLINE_HERDR_TAB_LABEL:-}"
   if [[ -z "$TAB_LABEL" ]]; then
-    LABEL_SLUG=$(printf '%s' "$(basename "$CWD")" \
-                 | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' \
-                 | tr -s '-' | sed 's/^-*//; s/-*$//' | cut -c1-13)
-    [[ -z "$LABEL_SLUG" ]] && LABEL_SLUG="call"
-    TAB_LABEL="${CALL_ID: -6}-$LABEL_SLUG"
+    TAB_LABEL=$(herdr_tab_label "${LABEL:-$(basename "$CWD")}" "$CALL_ID")
   fi
 
   herdr_cli tab create --workspace "$HOST_WORKSPACE" --cwd "$CWD" \
@@ -371,12 +380,14 @@ START_ATTEMPTS="${HOTLINE_HERDR_START_ATTEMPTS:-4}"
 # value that follows a space-separated form, which resurrects the callee later with
 # a bare `--allowedTools` and no list. claude accepts either form.
 #
-# No `-n <session-name>` here, unlike cmux: that flag's passthrough is unverified
-# under herdr, and the herdr agent NAME already carries the call's identity in
-# `herdr agent list` — see AGENT_SLUG_TARGET below for what that name is built from.
-# That is also why this launcher takes no `--name` at all: there was nothing left
-# for a session name to reach.
+# `-n <session-name>` is what puts the label on a SPLIT placement's pane. claude
+# emits its session name as the terminal title, and herdr — like cmux — renders that
+# live, so a pane with no tab of its own still reads `hotline: <label> (<mode>)`.
+# Distinct from the herdr agent NAME, which carries the call's addressable identity
+# in `herdr agent list` and stays dir-slugged (see AGENT_SLUG_TARGET below); a
+# session name never reaches that field.
 CLAUDE_ARGS=(--session-id "$SESSION_ID_PRESET")
+[[ -n "$SESSION_NAME" ]] && CLAUDE_ARGS+=(-n "$SESSION_NAME")
 [[ -n "${HOTLINE_CLAUDE_MODEL:-}" ]] && CLAUDE_ARGS+=(--model "$HOTLINE_CLAUDE_MODEL")
 # Opt-in via HOTLINE_DANGEROUSLY_SKIP_PERMISSIONS — see README. A hotline callee
 # lands in an unattended pane, so without this it stalls on the first permission
@@ -396,7 +407,7 @@ START_TIMEOUT_MS=$(( BOOT_SECONDS * 1000 ))
 [[ $START_TIMEOUT_MS -lt 1000   ]] && START_TIMEOUT_MS=1000
 
 # The slug names the TARGET, never the call's session name. `basename` of a session
-# name ("hotline: a → b (mode)") is the whole string, so slugging it minted every
+# name ("hotline: <label> (<mode>)") is the whole string, so slugging it minted every
 # agent as hotline-hotline-* and `herdr agent list` could not say which directory a
 # stuck callee was sitting in. The host joins the slug for a remote dial: two boxes
 # hold the same directory names, and the agent name is the only handle a caller has

@@ -34,13 +34,14 @@
 set -euo pipefail
 
 if [[ "${1:-}" == "--help" ]]; then
-  echo "Usage: cmux-call.sh --cwd <path> [--prompt <text>] [--resume <session-id>] [--name <name>] [--fork-session] [--tools <tools>]"
+  echo "Usage: cmux-call.sh --cwd <path> [--prompt <text>] [--resume <session-id>] [--name <name>] [--label <text>] [--fork-session] [--tools <tools>]"
   echo ""
   echo "Opens a workspace in CMUX and launches Claude."
   echo "Outputs: {\"workspace_id\": \"...\", \"cwd\": \"...\", \"session_id\": \"...\"}"
   echo ""
   echo "  --prompt <text>       Optional prompt to deliver to the interactive session"
   echo "  --prompt-file <path>  Same, read from a file (preferred: keeps it off argv)"
+  echo "  --label <text>        What the callee is DOING; names a --detached workspace"
   echo "  --tools <tools>  Override allowed tools (default: \"Bash Read Edit Write Grep Glob\")"
   exit 0
 fi
@@ -50,6 +51,10 @@ PROMPT=""
 PROMPT_FILE=""
 RESUME_ID=""
 SESSION_NAME=""
+# What the callee is DOING. See cmux-call-async.sh: a surface placement needs
+# nothing from it (claude publishes SESSION_NAME as its live terminal title, which
+# cmux renders in the strip); a detached workspace has no such tab, so this names it.
+LABEL=""
 FORK_SESSION=false
 ALLOWED_TOOLS="Bash Read Edit Write Grep Glob"
 # Placement (see cmux-call-async.sh for the full rationale):
@@ -71,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --prompt-file) PROMPT_FILE="$2"; shift 2 ;;
     --resume) RESUME_ID="$2"; shift 2 ;;
     --name) SESSION_NAME="$2"; shift 2 ;;
+    --label) LABEL="$2"; shift 2 ;;
     --fork-session) FORK_SESSION=true; shift ;;
     --tools) ALLOWED_TOOLS="$2"; shift 2 ;;
     --detached|--new-workspace) PLACEMENT="detached"; shift ;;
@@ -139,7 +145,16 @@ if [[ "$PLACEMENT" == "detached" ]]; then
   # leaves a swallowed `\n` as a command typed but never run. surface-ready.sh does
   # both jobs with one probe — the send attaches the PTY, and the ≥2-hit marker
   # check proves the shell is executing input.
-  WS_OUTPUT=$(cmux new-workspace --cwd "$CWD" --focus false 2>&1)
+  # --name, prefixed and never bare: a detached workspace's name is what the tab
+  # strip shows for it, and `--window <name>` resolves a window by the title of a
+  # workspace inside it — a workspace titled with a bare subject could be adopted as
+  # a later dial's `--window` target.
+  # An ARRAY, not `${WS_NAME:+--name "$WS_NAME"}`: an unquoted expansion word-splits
+  # a multi-word label and hands cmux a literal quote character.
+  NAME_ARGS=()
+  [[ -n "$LABEL" ]] && NAME_ARGS=(--name "hotline: $LABEL")
+  WS_OUTPUT=$(cmux new-workspace --cwd "$CWD" \
+    ${NAME_ARGS[@]+"${NAME_ARGS[@]}"} --focus false 2>&1)
   WS_REF=$(echo "$WS_OUTPUT" | grep -oE 'workspace:[0-9]+' | head -1 || true)
   if [[ -z "$WS_REF" ]]; then
     jq -n --arg err "cmux new-workspace failed: $WS_OUTPUT" '{error: $err}'
@@ -166,6 +181,9 @@ else
   # Side-by-side via cmux-cli's canonical opener. On a --wait-ready timeout it
   # exits 3 (no JSON); surface its stderr as the error.
   READY_TIMEOUT="${HOTLINE_SURFACE_READY_TIMEOUT:-8}"
+  # NO --title: it would PIN a static tab title over claude's own dynamic one and
+  # cost the ◑/✳/⏺ activity glyph for the life of the tab. The label already reaches
+  # the strip through --name → `claude -n` → the terminal title.
   if ! SURF_JSON=$("$OPEN_SIDE_SURFACE" --caller --wait-ready \
       --wait-ready-timeout "$READY_TIMEOUT" --json 2>/tmp/hotline-side-err.$$); then
     err=$(cat /tmp/hotline-side-err.$$ 2>/dev/null); rm -f /tmp/hotline-side-err.$$
@@ -324,11 +342,13 @@ if [[ -n "$PROMPT" ]]; then
   echo true > "$CALL_DIR/keep_workspace.txt"
 
   # Which surface? A surface placement already knows — but ${PLACE_ID} alone is not
-  # enough: open-window-surface.sh emits no surface_id at all, and
-  # open-side-surface.sh emits null when its own tree lookup misses, so every
-  # --window conference failed here and side placement failed intermittently. Fall
-  # back to the display ref exactly as SEND_TARGET does; cmux-paste.sh resolves a
-  # ref through the tree.
+  # enough. Both openers now emit surface_id (open-window-surface.sh:197-233,
+  # open-side-surface.sh — the same ref→UUID lookup, claude-plugins-h2et), and both
+  # OMIT the key when that lookup comes up empty: a cmux too old for
+  # `--id-format both`, or a tree entry with no `.id`. The fallback is for exactly
+  # that miss — before the window opener resolved ids, it was every --window
+  # conference and intermittent side ones. Fall back to the display ref exactly as
+  # SEND_TARGET does; cmux-paste.sh resolves a ref through the tree.
   PASTE_SURFACE="${PLACE_ID:-$PLACE_REF}"
   PASTE_WORKSPACE=""
   if [[ "$PLACE_KIND" == "workspace" ]]; then
