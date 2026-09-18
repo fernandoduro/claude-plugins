@@ -20,10 +20,12 @@ The trade-off is that the destination is fixed. `channel`, `username`, and `icon
 
 ## Setup (one time)
 
-The script needs a webhook URL and the `curl` + `jq` tools. The plugin README walks through it: create a Slack app, activate Incoming Webhooks, **Add New Webhook to Workspace**, pick the channel, copy the URL. That README is at `${CLAUDE_PLUGIN_ROOT}/README.md` — Codex: substitute the installed plugin directory for that token. Then provide the URL one of two ways:
+The script needs a webhook URL and the `curl` + `jq` tools. The plugin README walks through it: create a Slack app, activate Incoming Webhooks, **Add New Webhook to Workspace**, pick the channel, copy the URL. That README is at `${CLAUDE_PLUGIN_ROOT}/README.md` — Codex: substitute the installed plugin directory for that token. Then store the URL under a name that says where it posts:
 
-- `export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/…`, or
-- `export SLACK_WEBHOOK_OP_REF="op://Employee/Slack notify/webhook"` (1Password ref; the script resolves it via `op read` so the URL never sits in your shell env).
+- `export SLACK_WEBHOOK_URL_RELEASES=https://hooks.slack.com/services/…`, or
+- `export SLACK_WEBHOOK_OP_REF_RELEASES="op://Employee/Slack notify/releases"` (1Password ref; the script resolves it via `op read` so the URL never sits in your shell env).
+
+**Name every webhook for its destination.** A webhook URL reveals nothing about which channel it posts to, so the variable name is the only place that information lives — and `--to` refuses to fall back, so a name that doesn't resolve is an error rather than a message in the wrong channel. `--to releases` reads `SLACK_WEBHOOK_URL_RELEASES` (uppercased, with `-` and `.` becoming `_`), so `--to claude-plugins` reads `SLACK_WEBHOOK_URL_CLAUDE_PLUGINS`. The unsuffixed `SLACK_WEBHOOK_URL` works as a default when there is exactly one webhook, but it tells the next reader nothing.
 
 **The URL is a bearer secret.** Anyone holding it can post to that channel, so it never goes in a repo, an issue, or a transcript — Slack actively searches for leaked webhook URLs and revokes them. The script hands it to `curl` on stdin, so it stays out of `ps` and shell history.
 
@@ -42,7 +44,7 @@ This validates deps and the URL **offline**. Incoming webhooks have no auth-chec
 ```bash
 # Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
 SKILL_DIR="${CLAUDE_SKILL_DIR}"
-bash "$SKILL_DIR/scripts/notify.sh" 'Deploy finished: 4 services green, 0 rollbacks.'
+bash "$SKILL_DIR/scripts/notify.sh" --to releases 'Deploy finished: 4 services green, 0 rollbacks.'
 ```
 
 For anything multi-line, or anything you would not want in `ps` output, use a file or stdin instead of an argument:
@@ -57,9 +59,9 @@ Slack's message markup is not Markdown — `*bold*` not `**bold**`, `<url|label>
 
 Text is capped at 40,000 bytes (Slack's limit for a message's `text`). The script refuses longer input rather than letting Slack truncate it — post a summary with a link instead.
 
-## Several destinations
+## More than one destination
 
-One webhook, one channel. To reach more than one, create a webhook per channel and give each a suffixed variable:
+One webhook, one channel — so reaching a second channel means a second webhook, named the same way:
 
 ```bash
 export SLACK_WEBHOOK_URL_ALERTS=https://hooks.slack.com/services/…
@@ -72,7 +74,7 @@ SKILL_DIR="${CLAUDE_SKILL_DIR}"
 bash "$SKILL_DIR/scripts/notify.sh" --to alerts 'Disk at 91% on build-02.'
 ```
 
-`--to <name>` reads `SLACK_WEBHOOK_URL_<NAME>` (or `SLACK_WEBHOOK_OP_REF_<NAME>`), uppercased. With no `--to`, the unsuffixed pair is used.
+`--to` also accepts `SLACK_WEBHOOK_OP_REF_<NAME>` for a 1Password-held URL. When a `--to` name resolves to nothing the script stops — it never falls back to another webhook.
 
 ## Replying in a thread
 

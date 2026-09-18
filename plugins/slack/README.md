@@ -103,16 +103,18 @@ The cost of that smallness is that the destination is fixed. `channel`, `usernam
 
 4. **Copy the URL** from **Webhook URLs for Your Workspace**. It has the shape `https://hooks.slack.com/services/<team>/<hook>/<secret>`.
 
-5. **Store it.** Either:
-   - `export SLACK_WEBHOOK_URL=https://hooks.slack.com/services/…`, **or**
-   - `export SLACK_WEBHOOK_OP_REF="op://Employee/Slack notify/webhook"` (resolved via `op read` at call time).
+5. **Store it under a name that says where it posts.** Either:
+   - `export SLACK_WEBHOOK_URL_RELEASES=https://hooks.slack.com/services/…`, **or**
+   - `export SLACK_WEBHOOK_OP_REF_RELEASES="op://Employee/Slack notify/releases"` (resolved via `op read` at call time).
+
+   A webhook URL reveals nothing about its channel, so the variable name is the only place that lives. `--to releases` reads `SLACK_WEBHOOK_URL_RELEASES` — uppercased, with `-` and `.` becoming `_`, so `--to claude-plugins` reads `SLACK_WEBHOOK_URL_CLAUDE_PLUGINS`. The unsuffixed `SLACK_WEBHOOK_URL` works as a default when there is only one webhook, but it tells the next reader nothing.
 
 > **The URL is the credential.** Anyone holding it can post to that channel. Never put it in a repo, an issue, a PR, or a transcript — Slack actively searches for leaked webhook URLs and revokes the ones it finds. If a send starts failing with `no_service` after previously working, assume that's what happened and regenerate it.
 
 ### Verify
 
 ```bash
-bash skills/notify-slack/scripts/notify.sh --check
+bash skills/notify-slack/scripts/notify.sh --to releases --check
 ```
 
 Validates deps and the URL **without sending anything**, and prints the endpoint with its secret tail withheld. Incoming webhooks have no auth-check endpoint, so a pass doesn't prove the URL is still live — send one real message to confirm that.
@@ -121,28 +123,28 @@ Validates deps and the URL **without sending anything**, and prints the endpoint
 
 ```bash
 # Simple notification
-skills/notify-slack/scripts/notify.sh 'Deploy finished: 4 services green.'
+skills/notify-slack/scripts/notify.sh --to releases 'Deploy finished: 4 services green.'
 
 # Multi-line, from a file (keeps the text out of `ps`)
-skills/notify-slack/scripts/notify.sh --text-file /tmp/summary.md
+skills/notify-slack/scripts/notify.sh --to releases --text-file /tmp/summary.md
 
-# Inspect the exact payload without sending
-skills/notify-slack/scripts/notify.sh --dry-run --text-file /tmp/summary.md
+# Inspect the exact payload and destination without sending
+skills/notify-slack/scripts/notify.sh --to releases --dry-run --text-file /tmp/summary.md
 
 # Reply in a thread (get the ts from read-slack)
-skills/notify-slack/scripts/notify.sh --thread-ts 1763502924.627409 'Fixed in 3ecbf8920.'
+skills/notify-slack/scripts/notify.sh --to releases --thread-ts 1763502924.627409 'Fixed in 3ecbf8920.'
 
 # Block Kit layout; --text is the notification fallback line
-skills/notify-slack/scripts/notify.sh --text 'Nightly suite: 2 failures' --blocks-file /tmp/blocks.json
+skills/notify-slack/scripts/notify.sh --to releases --text 'Nightly suite: 2 failures' --blocks-file /tmp/blocks.json
 ```
 
 Slack's markup is not Markdown (`*bold*`, `<url|label>`, no headings or tables). The `collab-tools` plugin's `temp-draft` skill carries the full reference at `skills/temp-draft/references/slack-formatting.md`.
 
 Text is capped at 40,000 bytes — Slack's limit for a message's `text`. The script refuses longer input rather than letting Slack truncate it.
 
-### Several channels
+### More than one channel
 
-One webhook, one channel. Create a webhook per destination and give each a suffixed variable:
+One webhook, one channel — a second channel means a second webhook, named the same way:
 
 ```bash
 export SLACK_WEBHOOK_URL_ALERTS=https://hooks.slack.com/services/…
@@ -153,7 +155,7 @@ export SLACK_WEBHOOK_URL_ENG=https://hooks.slack.com/services/…
 skills/notify-slack/scripts/notify.sh --to alerts 'Disk at 91% on build-02.'
 ```
 
-`--to <name>` reads `SLACK_WEBHOOK_URL_<NAME>` (or `SLACK_WEBHOOK_OP_REF_<NAME>`), uppercased. It never falls back to the default webhook — a typo'd name is an error, not a message in the wrong channel.
+`--to` never falls back to another webhook — a typo'd name is an error, not a message in the wrong channel.
 
 ### No retries, no receipts
 

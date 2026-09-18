@@ -7,8 +7,9 @@
 #   notify.sh --check [options]       Validate local config; makes NO network call
 #
 # Options:
-#   --to <name>          Use the named webhook (SLACK_WEBHOOK_URL_<NAME>) instead
-#                        of the default one. One webhook == one fixed channel.
+#   --to <name>          Use the webhook named SLACK_WEBHOOK_URL_<NAME> rather
+#                        than the unsuffixed default. One webhook == one fixed
+#                        channel, so name it for that channel.
 #   --text <string>      Message text.
 #   --text-file <path>   Read message text from a file (keeps it out of argv).
 #   --blocks-file <path> JSON array of Block Kit blocks; --text becomes the
@@ -18,9 +19,10 @@
 #
 # Text resolution order: --text-file, --text, positional arg, stdin.
 #
-# Auth: resolves the webhook URL from $SLACK_WEBHOOK_URL, or from a 1Password
-# ref in $SLACK_WEBHOOK_OP_REF via `op read`. With --to <name>, the suffixed
-# variants are used (SLACK_WEBHOOK_URL_<NAME> / SLACK_WEBHOOK_OP_REF_<NAME>).
+# Auth: with --to <name>, resolves the webhook URL from SLACK_WEBHOOK_URL_<NAME>
+# or a 1Password ref in SLACK_WEBHOOK_OP_REF_<NAME> via `op read` — name each
+# webhook for the channel it posts to, since the URL itself does not say. With
+# no --to, the unsuffixed SLACK_WEBHOOK_URL / SLACK_WEBHOOK_OP_REF are used.
 # The URL is handed to curl on stdin (--config -) so it never appears in argv /
 # `ps` / shell history — it is a bearer secret, and Slack revokes leaked ones.
 #
@@ -72,7 +74,7 @@ resolve_webhook() {
 	elif [[ -n "$TARGET" ]]; then
 		die "No webhook for --to $TARGET. Set $url_var=https://hooks.slack.com/services/… (or $ref_var to a 1Password op:// ref). See the plugin README."
 	else
-		die "No webhook URL. Set SLACK_WEBHOOK_URL=https://hooks.slack.com/services/… (or SLACK_WEBHOOK_OP_REF to a 1Password op:// ref). See the plugin README for how to create the Slack app and webhook."
+		die "No webhook URL. Name one for its destination — export SLACK_WEBHOOK_URL_<NAME>=https://hooks.slack.com/services/… (or SLACK_WEBHOOK_OP_REF_<NAME> for a 1Password op:// ref) and pass --to <name>. A single webhook may instead use the unsuffixed SLACK_WEBHOOK_URL. See the plugin README for how to create the Slack app and webhook."
 	fi
 
 	# Refuse anything that isn't a Slack webhook endpoint: this URL is a secret
@@ -92,7 +94,9 @@ while [[ $# -gt 0 ]]; do
 		--text-file)    TEXT_FILE="${2:-}"; [[ -n "$TEXT_FILE" ]] || die "--text-file needs a path"; shift 2;;
 		--blocks-file)  BLOCKS_FILE="${2:-}"; [[ -n "$BLOCKS_FILE" ]] || die "--blocks-file needs a path"; shift 2;;
 		--thread-ts)    THREAD_TS="${2:-}"; [[ -n "$THREAD_TS" ]] || die "--thread-ts needs a timestamp"; shift 2;;
-		-h|--help)      sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0;;
+		# Print the header block verbatim rather than from a line range, so
+		# editing the header can't silently truncate --help.
+		-h|--help)      awk 'NR>2 && /^# =+$/{exit} NR>2{sub(/^# ?/,""); print}' "${BASH_SOURCE[0]}"; exit 0;;
 		-)              POSITIONAL="$(cat)"; shift;;
 		-*)             die "Unknown option: $1";;
 		*)              POSITIONAL="$1"; shift;;
