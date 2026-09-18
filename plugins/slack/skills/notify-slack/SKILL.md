@@ -107,10 +107,11 @@ bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications --text 'Nightly sui
 
 ## Before sending
 
-Posting into a channel is outward-facing and **cannot be undone** — incoming webhooks have no delete. Two habits follow:
+Posting into a channel is outward-facing and **cannot be undone** — incoming webhooks have no delete. What follows from that is a narrow check on *content*, not a gate on sending.
 
-1. **Confirm the content and the destination with the user** before the first send of a session, and any time the message quotes someone, names a customer, or carries a log or screenshot. A request like "ping me on Slack when this finishes" authorizes that notification and the HTTPS call it needs — don't ask twice for the same one. Treat "post this to the team channel" as a publish, not a note to self.
-2. **Use `--dry-run`** to inspect the exact payload and resolved destination without sending anything. It is also the first thing to reach for when Slack answers `invalid_payload`.
+1. **A request to notify is authorization to notify.** "Ping me on Slack when this finishes", "post that summary", or an explicit invocation of this skill authorizes both the message and the HTTPS call it needs — send it. Being the first send of the session is not a reason to stop, and neither is the fact that a webhook cannot be unsent. A user who asked for a notification and got a question back paid a round-trip for nothing; asking a second time after they have answered is worse.
+2. **Confirm only what the user cannot already see.** Show them the text first when the message carries something they did not write or read — a log excerpt, a stack trace, a third party's words, a customer's name — or when the destination is wider than what they asked for, as when they said "tell me" and the webhook posts to a team channel. Ask once, with the drafted text in the question, and send on a yes.
+3. **Use `--dry-run`** to inspect the exact payload and resolved destination without sending anything. It is also the first thing to reach for when Slack answers `invalid_payload`.
 
 ```bash
 # Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
