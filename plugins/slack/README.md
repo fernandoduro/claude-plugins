@@ -124,11 +124,14 @@ Validates deps and the URL **without sending anything**, and prints the endpoint
 ### Usage
 
 ```bash
-# Simple notification
-skills/notify-slack/scripts/notify.sh --to agent-notifications 'Deploy finished: 4 services green.'
-
-# Multi-line, from a file (keeps the text out of `ps`)
+# The default: message from a file, so it stays out of `ps`
 skills/notify-slack/scripts/notify.sh --to agent-notifications --text-file /tmp/summary.md
+
+# Or from stdin
+printf 'Deploy finished: 4 services green.\n' | skills/notify-slack/scripts/notify.sh --to agent-notifications
+
+# A short fixed literal may ride argv — nothing sensitive, nothing you didn't type
+skills/notify-slack/scripts/notify.sh --to agent-notifications 'nightly run started'
 
 # Inspect the exact payload and destination without sending
 skills/notify-slack/scripts/notify.sh --to agent-notifications --dry-run --text-file /tmp/summary.md

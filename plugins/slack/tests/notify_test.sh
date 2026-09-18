@@ -48,6 +48,7 @@ STUB_DIR="$SANDBOX/bin"
 mkdir -p "$STUB_DIR"
 cat > "$STUB_DIR/curl" <<'STUB'
 #!/usr/bin/env bash
+printf '%s\n' "$@" > "$STUB_SANDBOX/curl-argv"
 config="$(cat)"
 printf '%s' "$config" > "$STUB_SANDBOX/curl-config"
 out="$(printf '%s' "$config" | sed -n 's/^output = "\(.*\)"$/\1/p')"
@@ -268,6 +269,56 @@ if [[ $STATUS -ne 0 ]] && grep -q "empty response" <<<"$OUT"; then
 else
   fail "an empty error body is still reported rather than read as success (status $STATUS: $OUT)"
 fi
+
+# ---- the message body never reaches argv ------------------------------------
+# docs/compounding.md: payloads ride files or stdin, never argv — argv is
+# ps-visible to every local user for the process lifetime.
+
+SENTINEL="payload-sentinel-must-not-reach-argv"
+run_stubbed env SLACK_WEBHOOK_URL="$FAKE_URL" bash "$NOTIFY" --text "$SENTINEL"
+if ! grep -q "$SENTINEL" "$SANDBOX/curl-argv"; then
+  pass "the message body never appears in curl's argv"
+else
+  fail "the message body never appears in curl's argv (argv: $(cat "$SANDBOX/curl-argv"))"
+fi
+
+if ! grep -q "$SENTINEL" "$SANDBOX/curl-config"; then
+  pass "the message body is not inlined into the curl config either"
+else
+  fail "the message body is not inlined into the curl config either"
+fi
+
+if grep -q '^data-binary = "@' "$SANDBOX/curl-config"; then
+  pass "the message body rides a file referenced by the curl config"
+else
+  fail "the message body rides a file referenced by the curl config (config: $(cat "$SANDBOX/curl-config"))"
+fi
+
+# ---- the text limit has one source ------------------------------------------
+# docs/compounding.md: each constant has one source; where a doc must state the
+# fact, a canary asserts agreement. MAX_TEXT lives in notify.sh; SKILL.md and
+# the plugin README both quote it in prose.
+
+SCRIPT_MAX="$(sed -n 's/^MAX_TEXT=\([0-9]*\)$/\1/p' "$NOTIFY")"
+if [[ "$SCRIPT_MAX" =~ ^[0-9]+$ ]]; then
+  pass "MAX_TEXT is readable from notify.sh (found: $SCRIPT_MAX)"
+else
+  fail "MAX_TEXT is readable from notify.sh (found: '$SCRIPT_MAX')"
+fi
+
+# 40000 -> "40,000", the form the docs use. awk, not a sed label loop: BSD sed
+# rejects ':a;…;ta' written on one line, so that form fails on macOS.
+PRETTY_MAX="$(awk -v n="$SCRIPT_MAX" 'BEGIN { s = n; out = ""
+  while (length(s) > 3) { out = "," substr(s, length(s) - 2) out; s = substr(s, 1, length(s) - 3) }
+  print s out }')"
+for doc in "$SCRIPT_DIR/../skills/notify-slack/SKILL.md" "$SCRIPT_DIR/../README.md"; do
+  label="$(basename "$doc")"
+  if grep -q "$PRETTY_MAX" "$doc"; then
+    pass "$label quotes the limit that notify.sh actually enforces ($PRETTY_MAX)"
+  else
+    fail "$label quotes the limit that notify.sh actually enforces ($PRETTY_MAX not found — MAX_TEXT changed without the doc)"
+  fi
+done
 
 # One send, one request — no retry loop hiding behind a failure.
 rm -f "$SANDBOX/curl-count"

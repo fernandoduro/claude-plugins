@@ -41,19 +41,26 @@ This validates deps and the URL **offline**. Incoming webhooks have no auth-chec
 
 ## Sending a message
 
-```bash
-# Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
-SKILL_DIR="${CLAUDE_SKILL_DIR}"
-bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications 'Deploy finished: 4 services green, 0 rollbacks.'
-```
-
-For anything multi-line, or anything you would not want in `ps` output, use a file or stdin instead of an argument:
+**The message rides a file or stdin, not an argument.** Anything on the command line is visible in `ps` to every local user for as long as the process lives, and a notification routinely carries the thing you were working on — a log line, an error, a customer's name.
 
 ```bash
 # Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
 SKILL_DIR="${CLAUDE_SKILL_DIR}"
 bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications --text-file /tmp/summary.md
 ```
+
+Stdin works the same way, which suits a message you are composing in the same command:
+
+```bash
+# Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
+SKILL_DIR="${CLAUDE_SKILL_DIR}"
+printf 'Deploy finished: 4 services green, 0 rollbacks.\n' \
+  | bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications
+```
+
+A positional argument and `--text` also work, and are fine for a short fixed literal with nothing sensitive in it — `'nightly run started'`. Reach for the file or stdin form the moment the text contains anything you did not type yourself.
+
+Whichever form you use, the text reaches `curl` through a file named in its stdin config, so it never appears in the *request's* argv — only your own invocation can leak it.
 
 Slack's message markup is not Markdown — `*bold*` not `**bold**`, `<url|label>` not `[label](url)`, and no headings or tables. The full reference ships with the `collab-tools` plugin, in its `temp-draft` skill under `references/slack-formatting.md`; read it before composing anything with formatting in it.
 
