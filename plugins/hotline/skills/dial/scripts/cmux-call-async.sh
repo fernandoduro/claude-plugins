@@ -446,10 +446,9 @@ else
         #     hasn't re-registered it.
         #   rc=1 + not_found — the context resolved, but cmux then refused the
         #     target. The opener pins --workspace/--window on every new-surface
-        #     call, so this is no longer the inherited-CMUX_WORKSPACE_ID miss a
-        #     callee dialing onward used to hit (claude-plugins-qyj1); it now
-        #     means the pane or its workspace changed between the opener's tree
-        #     snapshot and the call. Kept as a safety net, not an expected path.
+        #     call, so this means the pane or its workspace changed between the
+        #     opener's tree snapshot and the call — a safety net, not an
+        #     expected path (claude-plugins-qyj1).
         # Side-by-side needs that context; detached does not (it opens its own
         # new workspace). Rather than fail the whole call, degrade to detached so the
         # dial still completes — the callee just lands in its own tab instead of a

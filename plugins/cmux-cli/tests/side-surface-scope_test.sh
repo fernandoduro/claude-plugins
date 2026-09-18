@@ -16,6 +16,13 @@
 # fallback supplies the placement), but the missing flags were in a branch that
 # a normal `identify` reaches too. (claude-plugins-qyj1)
 #
+# A tree whose pane `.id`s are null is fixtured too, because it reaches the
+# other `new-surface` branch — the one that targets the positional `pane:N` —
+# and because that is the shape where a container UUID packed into the pane
+# TSV would shift into the `--pane` slot. Both are asserted by exact argv
+# value, not by substring. A tree whose window `.id` is null covers the
+# ref fallback for `--window`.
+#
 # Driven entirely by a shimmed `cmux` on PATH — never touches real cmux.
 # =============================================================================
 set -u
@@ -30,6 +37,7 @@ WS_X_ID="AAAAAAAA-0000-0000-0000-00000000000X"
 WS_Y_ID="BBBBBBBB-0000-0000-0000-00000000000Y"
 SURF_CALLER_ID="CCCCCCCC-0000-0000-0000-0000000000C1"
 PANE_ADJACENT_ID="DDDDDDDD-0000-0000-0000-0000000000D1"
+WIN_ID="EEEEEEEE-0000-0000-0000-0000000000E1"
 
 PASS=0
 FAIL=0
@@ -59,6 +67,7 @@ WS_X_ID="$WS_X_ID"
 WS_Y_ID="$WS_Y_ID"
 SURF_CALLER_ID="$SURF_CALLER_ID"
 PANE_ADJACENT_ID="$PANE_ADJACENT_ID"
+WIN_ID="$WIN_ID"
 SHIM
   cat >> "$dir/bin/cmux" <<'SHIM'
 case "$1" in
@@ -73,10 +82,10 @@ case "$1" in
     fi
     ;;
   tree)
-    jq -n \
-      --arg wsx "$WS_X_ID" --arg wsy "$WS_Y_ID" \
+    t=$(jq -n \
+      --arg wsx "$WS_X_ID" --arg wsy "$WS_Y_ID" --arg win "$WIN_ID" \
       --arg caller "$SURF_CALLER_ID" --arg adj "$PANE_ADJACENT_ID" '
-      {windows: [{ref:"window:1", id:"WIN-UUID", index:0, workspaces: [
+      {windows: [{ref:"window:1", id:$win, index:0, workspaces: [
         {ref:"workspace:9", id:$wsx, index:0, title:"inherited env workspace",
          panes: [{ref:"pane:1", id:"PANE-ELSEWHERE", index:0,
            surfaces: [{ref:"surface:2", id:"SURF-ELSEWHERE", pane_id:"PANE-ELSEWHERE", index:0, title:"zsh"}]}]},
@@ -87,7 +96,15 @@ case "$1" in
              {ref:"surface:258", id:"SURF-NEW", pane_id:$adj, index:1, title:"zsh"}]},
            {ref:"pane:4", id:"PANE-CALLER", index:1, surfaces: [
              {ref:"surface:12", id:$caller, pane_id:"PANE-CALLER", index:0, title:"agent"}]}]}
-      ]}]}' ;;
+      ]}]}')
+    # Older cmux (and any tree read without --id-format both) reports `.id` as
+    # null. Model each level independently: the opener has a different handle
+    # to fall back on for each.
+    [[ -n "${CMUX_FAKE_PANE_IDS_NULL:-}" ]] \
+      && t=$(printf '%s' "$t" | jq '(.windows[].workspaces[].panes[].id) = null')
+    [[ -n "${CMUX_FAKE_WINDOW_ID_NULL:-}" ]] \
+      && t=$(printf '%s' "$t" | jq '(.windows[].id) = null')
+    printf '%s\n' "$t" ;;
   new-surface|new-pane)
     echo "$*" >> "$ST/create_calls"
     # Model cmux's real scoping: the --pane lookup happens inside --workspace,
@@ -113,26 +130,35 @@ SHIM
   chmod +x "$dir/bin/cmux"
 }
 
-# Assert the recorded create call pins pane UUID + the subject's real container.
+# The value cmux received for a flag, read back out of the recorded argv.
+arg_after() {
+  awk -v f="$1" '{for (i = 1; i <= NF; i++) if ($i == f) { print $(i+1); exit }}' \
+    "$2" 2>/dev/null
+}
+
+want() {
+  local label="$1" got="$2" expect="$3"
+  if [[ "$got" == "$expect" ]]; then pass "$label"; else fail "$label" "got=[$got] want=[$expect]"; fi
+}
+
+# Assert the recorded create call carries the intended pane handle and the
+# subject's real container. Exact values, because the failure mode being
+# guarded is the right flag with the wrong value in it.
 assert_pinned() {
-  local label="$1" calls_file="$2"
-  local calls
+  local label="$1" calls_file="$2" want_pane="$3" want_win="$4"
+  local calls got_pane
   calls=$(cat "$calls_file" 2>/dev/null || echo NONE)
-  if grep -q -- "--pane $PANE_ADJACENT_ID" <<<"$calls"; then
-    pass "$label: targets the adjacent pane by UUID"
+  got_pane=$(arg_after --pane "$calls_file")
+  want "$label: targets the adjacent pane as $want_pane" "$got_pane" "$want_pane"
+  want "$label: pins --workspace to the pane's real workspace, not the inherited one" \
+       "$(arg_after --workspace "$calls_file")" "$WS_Y_ID"
+  want "$label: pins --window alongside it" "$(arg_after --window "$calls_file")" "$want_win"
+  # A container UUID in the --pane slot is `not_found: Pane not found` all over
+  # again, and it is what a collapsed multi-column TSV read produces.
+  if [[ "$got_pane" != "$WS_Y_ID" && "$got_pane" != "$WS_X_ID" && "$got_pane" != "$WIN_ID" ]]; then
+    pass "$label: --pane never receives a container UUID"
   else
-    fail "$label: targets the adjacent pane by UUID" "calls=$calls"
-  fi
-  if grep -q -- "--workspace $WS_Y_ID" <<<"$calls"; then
-    pass "$label: pins --workspace to the pane's real workspace, not the inherited one"
-  else
-    fail "$label: pins --workspace to the pane's real workspace, not the inherited one" \
-         "calls=$calls"
-  fi
-  if grep -q -- "--window window:1" <<<"$calls"; then
-    pass "$label: pins --window alongside it"
-  else
-    fail "$label: pins --window alongside it" "calls=$calls"
+    fail "$label: --pane never receives a container UUID" "calls=$calls"
   fi
   if ! grep -q -- "--workspace $WS_X_ID" <<<"$calls"; then
     pass "$label: never hands cmux the inherited CMUX_WORKSPACE_ID"
@@ -157,7 +183,7 @@ else
   fail "identify caller:null — opens side-by-side instead of failing not_found" \
        "rc=$rc out=$out err=$(cat "$tmp/err.txt")"
 fi
-assert_pinned "identify caller:null" "$tmp/create_calls"
+assert_pinned "identify caller:null" "$tmp/create_calls" "$PANE_ADJACENT_ID" "$WIN_ID"
 
 # --- Case 2: identify succeeds normally — the flags are still there ---
 # Same branch, reached the ordinary way. The env still names workspace X, so a
@@ -173,7 +199,39 @@ else
   fail "identify succeeds — opens side-by-side" \
        "rc=$rc2 out=$out2 err=$(cat "$tmp2/err.txt")"
 fi
-assert_pinned "identify succeeds" "$tmp2/create_calls"
+assert_pinned "identify succeeds" "$tmp2/create_calls" "$PANE_ADJACENT_ID" "$WIN_ID"
+
+# --- Case 3: pane `.id`s are null — the positional branch, still pinned ---
+# The opener has no pane UUID to target, so it hands cmux `pane:3`; that ref
+# only resolves inside the right window/workspace, so the container flags are
+# what make the call work at all. The workspace and window still carry UUIDs
+# here, which is the shape where a container UUID can end up in --pane.
+tmp3=$(mktemp -d "${TMPDIR:-/tmp}/cmux-scope-c-XXXXXX"); make_shim "$tmp3"
+out3=$(PATH="$tmp3/bin:$PATH" CMUX_FAKE_STATE="$tmp3" CMUX_FAKE_PANE_IDS_NULL=1 \
+       CMUX_SURFACE_ID="$SURF_CALLER_ID" CMUX_WORKSPACE_ID="$WS_X_ID" \
+       bash "$OPENER" --caller --title "scoped side surface" --json 2>"$tmp3/err.txt")
+rc3=$?
+if [[ $rc3 -eq 0 && "$(jq -r '.surface_ref' <<<"$out3" 2>/dev/null)" == "surface:258" ]]; then
+  pass "pane .id null — opens side-by-side on the positional ref"
+else
+  fail "pane .id null — opens side-by-side on the positional ref" \
+       "rc=$rc3 out=$out3 err=$(cat "$tmp3/err.txt")"
+fi
+assert_pinned "pane .id null" "$tmp3/create_calls" "pane:3" "$WIN_ID"
+
+# --- Case 4: window `.id` is null — --window falls back to the ref ---
+tmp4=$(mktemp -d "${TMPDIR:-/tmp}/cmux-scope-d-XXXXXX"); make_shim "$tmp4"
+out4=$(PATH="$tmp4/bin:$PATH" CMUX_FAKE_STATE="$tmp4" CMUX_FAKE_WINDOW_ID_NULL=1 \
+       CMUX_SURFACE_ID="$SURF_CALLER_ID" CMUX_WORKSPACE_ID="$WS_X_ID" \
+       bash "$OPENER" --caller --title "scoped side surface" --json 2>"$tmp4/err.txt")
+rc4=$?
+if [[ $rc4 -eq 0 && "$(jq -r '.surface_ref' <<<"$out4" 2>/dev/null)" == "surface:258" ]]; then
+  pass "window .id null — opens side-by-side"
+else
+  fail "window .id null — opens side-by-side" \
+       "rc=$rc4 out=$out4 err=$(cat "$tmp4/err.txt")"
+fi
+assert_pinned "window .id null" "$tmp4/create_calls" "$PANE_ADJACENT_ID" "window:1"
 
 echo
 echo "side-surface-scope: $PASS passed, $FAIL failed"

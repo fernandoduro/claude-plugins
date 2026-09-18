@@ -174,23 +174,41 @@ if [[ -z "$subject_pane" || -z "$subject_ws" ]]; then
 fi
 
 # --- Enumerate panes in subject's workspace (ordered, with indexes) ---
+# One snapshot, queried three ways: the ordered pane list, and the UUIDs of the
+# window and workspace that list came out of.
+# --id-format both is what puts `.id` (the UUIDs) in this snapshot; without it
+# every `.id` comes back null and the only thing we can hand `new-surface` is a
+# positional ref, which is not safe to target by (see the branch below).
+subject_tree=$(cmux tree --all --json --id-format both)
+
 # TSV: pane_ref \t index \t pane_id
-# --id-format both is what puts `.id` (the pane UUID) in this snapshot; without
-# it every `.id` comes back null and the only thing we can hand `new-surface`
-# is a positional ref, which is not safe to target by (see the branch below).
-panes_tsv=$(cmux tree --all --json --id-format both | jq -r \
+# Three columns, and the optional one is last on purpose: `read` with
+# IFS=$'\t' treats tab as IFS whitespace, so a run of consecutive tabs is one
+# delimiter. A container UUID packed in behind an empty pane `.id` would shift
+# into `p_id` and be handed to `--pane`; the container UUIDs get their own
+# queries below instead.
+panes_tsv=$(printf '%s' "$subject_tree" | jq -r \
   --arg win "$subject_win" --arg ws "$subject_ws" '
     .windows[]
     | select(.ref == $win)
     | .workspaces[]
     | select(.ref == $ws)
-    | . as $wsobj
     | .panes
     | sort_by(.index)
     | .[]
-    | [.ref, (.index | tostring), (.id // ""), ($wsobj.id // "")]
+    | [.ref, (.index | tostring), (.id // "")]
     | @tsv
   ')
+
+# `first(...)` rather than a `| head -1` pipe: `set -o pipefail` turns a jq
+# killed by a closed pipe into a whole-script abort.
+subject_ws_id=$(printf '%s' "$subject_tree" | jq -r \
+  --arg win "$subject_win" --arg ws "$subject_ws" '
+    first(.windows[] | select(.ref == $win) | .workspaces[] | select(.ref == $ws))
+    | (.id // "")')
+subject_win_id=$(printf '%s' "$subject_tree" | jq -r \
+  --arg win "$subject_win" '
+    first(.windows[] | select(.ref == $win)) | (.id // "")')
 
 if [[ -z "$panes_tsv" ]]; then
   echo "open-side-surface: no panes found in $subject_ws (impossible?)" >&2
@@ -201,12 +219,10 @@ fi
 pane_refs=()
 pane_indexes=()
 pane_ids=()
-subject_ws_id=""
-while IFS=$'\t' read -r p_ref p_idx p_id p_ws_id; do
+while IFS=$'\t' read -r p_ref p_idx p_id; do
   pane_refs+=("$p_ref")
   pane_indexes+=("$p_idx")
   pane_ids+=("$p_id")
-  [[ -z "$subject_ws_id" ]] && subject_ws_id="$p_ws_id"
 done <<< "$panes_tsv"
 
 pane_count=${#pane_refs[@]}
@@ -246,20 +262,22 @@ else
   # workspace is not the inherited one comes back `not_found: Pane not found`.
   # So the container is always pinned explicitly here — which is what a hotline
   # callee dialing onward needs, since its inherited workspace id names the
-  # CALLER's workspace, not the one its own pane lives in. Prefer UUIDs for both
-  # pane and workspace: positional refs renumber as surfaces open and close, so
-  # a ref read out of the snapshot above can denote something else by the time
-  # this runs. (The new-pane branch above pins --workspace for the same reason:
-  # never let cmux infer the container.)
+  # CALLER's workspace, not the one its own pane lives in. Every handle here is
+  # a UUID when the snapshot carries one, ref only as a fallback: positional
+  # refs renumber as surfaces open and close, so a ref read out of the snapshot
+  # above can denote something else by the time this runs. (The new-pane branch
+  # above pins --workspace for the same reason: never let cmux infer the
+  # container.)
   subject_ws_target="${subject_ws_id:-$subject_ws}"
+  subject_win_target="${subject_win_id:-$subject_win}"
   if [[ -n "$adjacent_pane_id" ]]; then
     args=(new-surface --pane "$adjacent_pane_id" --type "$SURFACE_TYPE" \
-          --workspace "$subject_ws_target" --window "$subject_win")
+          --workspace "$subject_ws_target" --window "$subject_win_target")
   else
     # No pane UUID available: keep the positional ref, pinned to the same
     # context.
     args=(new-surface --pane "$adjacent_pane" --type "$SURFACE_TYPE" \
-          --workspace "$subject_ws_target" --window "$subject_win")
+          --workspace "$subject_ws_target" --window "$subject_win_target")
   fi
   [[ "$SURFACE_TYPE" == "browser" && -n "$URL" ]] && args+=(--url "$URL")
 fi
@@ -274,7 +292,7 @@ if ! out=$(cmux "${args[@]}" 2>&1); then
   if [[ "$out" == *"not_found"* ]]; then
     {
       echo "  The target was pinned explicitly ($subject_ws_target /"
-      echo "  ${subject_win:-?} / ${adjacent_pane_id:-$adjacent_pane}), so this is not the"
+      echo "  ${subject_win_target:-?} / ${adjacent_pane_id:-$adjacent_pane}), so this is not the"
       echo "  inherited-workspace miss: something moved between the tree snapshot above"
       echo "  and this call — the pane or its workspace closed, or the workspace was"
       echo "  moved to another window. Re-run to snapshot again."
