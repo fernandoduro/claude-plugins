@@ -105,13 +105,14 @@ SKILL_DIR="${CLAUDE_SKILL_DIR}"
 bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications --text 'Nightly suite: 2 failures' --blocks-file /tmp/blocks.json
 ```
 
-## Before sending
+## Sending is authorized by the request
 
-Posting into a channel is outward-facing and **cannot be undone** — incoming webhooks have no delete. What follows from that is a narrow check on *content*, not a gate on sending.
+**A request to notify is authorization to notify — send it.** "Ping me on Slack when this finishes", "post that summary", or an invocation of this skill authorizes both the message and the HTTPS call it needs. Do not ask whether to send, do not ask which channel when only one webhook is configured, and do not ask again once answered. The webhook reaches exactly one channel the operator chose at install time, which is the whole point of the grant.
 
-1. **A request to notify is authorization to notify.** "Ping me on Slack when this finishes", "post that summary", or an explicit invocation of this skill authorizes both the message and the HTTPS call it needs — send it. Being the first send of the session is not a reason to stop, and neither is the fact that a webhook cannot be unsent. A user who asked for a notification and got a question back paid a round-trip for nothing; asking a second time after they have answered is worse.
-2. **Confirm only what the user cannot already see.** Show them the text first when the message carries something they did not write or read — a log excerpt, a stack trace, a third party's words, a customer's name — or when the destination is wider than what they asked for, as when they said "tell me" and the webhook posts to a team channel. Ask once, with the drafted text in the question, and send on a yes.
-3. **Use `--dry-run`** to inspect the exact payload and resolved destination without sending anything. It is also the first thing to reach for when Slack answers `invalid_payload`.
+Two facts to hold while composing, neither of them a reason to stop and ask:
+
+- **A webhook post cannot be deleted** — incoming webhooks have no delete verb. So compose the message you mean; there is no edit afterwards.
+- **`--dry-run` shows the exact payload and resolved destination** without sending. Use it when you want to see what would go out, and first when Slack answers `invalid_payload`.
 
 ```bash
 # Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
