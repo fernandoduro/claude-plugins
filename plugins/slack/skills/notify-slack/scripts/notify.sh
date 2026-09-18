@@ -8,8 +8,8 @@
 #
 # Options:
 #   --to <name>          Use the webhook named SLACK_WEBHOOK_URL_<NAME> rather
-#                        than the unsuffixed default. One webhook == one fixed
-#                        channel, so name it for that channel.
+#                        than the unsuffixed default. Name it for what the
+#                        notifications are FOR, not for its current channel.
 #   --text <string>      Message text.
 #   --text-file <path>   Read message text from a file (keeps it out of argv).
 #   --blocks-file <path> JSON array of Block Kit blocks; --text becomes the
@@ -21,8 +21,9 @@
 #
 # Auth: with --to <name>, resolves the webhook URL from SLACK_WEBHOOK_URL_<NAME>
 # or a 1Password ref in SLACK_WEBHOOK_OP_REF_<NAME> via `op read` — name each
-# webhook for the channel it posts to, since the URL itself does not say. With
-# no --to, the unsuffixed SLACK_WEBHOOK_URL / SLACK_WEBHOOK_OP_REF are used.
+# webhook for the ROLE its notifications play, since the URL says nothing and
+# the channel behind it can be re-pointed. With no --to, the unsuffixed
+# SLACK_WEBHOOK_URL / SLACK_WEBHOOK_OP_REF are used.
 # The URL is handed to curl on stdin (--config -) so it never appears in argv /
 # `ps` / shell history — it is a bearer secret, and Slack revokes leaked ones.
 #
@@ -52,7 +53,7 @@ die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 #
 # An incoming webhook URL is bound to one channel at install time and cannot be
 # retargeted by the payload, so several destinations means several URLs. The
-# --to suffix convention is how a caller picks between them.
+# --to suffix convention is how a caller picks between them by role.
 resolve_webhook() {
 	local url_var="SLACK_WEBHOOK_URL" ref_var="SLACK_WEBHOOK_OP_REF" suffix=""
 	if [[ -n "$TARGET" ]]; then
@@ -74,7 +75,7 @@ resolve_webhook() {
 	elif [[ -n "$TARGET" ]]; then
 		die "No webhook for --to $TARGET. Set $url_var=https://hooks.slack.com/services/… (or $ref_var to a 1Password op:// ref). See the plugin README."
 	else
-		die "No webhook URL. Name one for its destination — export SLACK_WEBHOOK_URL_<NAME>=https://hooks.slack.com/services/… (or SLACK_WEBHOOK_OP_REF_<NAME> for a 1Password op:// ref) and pass --to <name>. A single webhook may instead use the unsuffixed SLACK_WEBHOOK_URL. See the plugin README for how to create the Slack app and webhook."
+		die "No webhook URL. Name one for what the notifications are for — export SLACK_WEBHOOK_URL_<NAME>=https://hooks.slack.com/services/… (or SLACK_WEBHOOK_OP_REF_<NAME> for a 1Password op:// ref) and pass --to <name>. A single webhook may instead use the unsuffixed SLACK_WEBHOOK_URL. See the plugin README for how to create the Slack app and webhook."
 	fi
 
 	# Refuse anything that isn't a Slack webhook endpoint: this URL is a secret

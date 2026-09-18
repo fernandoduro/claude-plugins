@@ -103,18 +103,18 @@ The cost of that smallness is that the destination is fixed. `channel`, `usernam
 
 4. **Copy the URL** from **Webhook URLs for Your Workspace**. It has the shape `https://hooks.slack.com/services/<team>/<hook>/<secret>`.
 
-5. **Store it under a name that says where it posts.** Either:
-   - `export SLACK_WEBHOOK_URL_RELEASES=https://hooks.slack.com/services/…`, **or**
-   - `export SLACK_WEBHOOK_OP_REF_RELEASES="op://Employee/Slack notify/releases"` (resolved via `op read` at call time).
+5. **Store it under a name that says what the notifications are for.** Either:
+   - `export SLACK_WEBHOOK_URL_AGENT_NOTIFICATIONS=https://hooks.slack.com/services/…`, **or**
+   - `export SLACK_WEBHOOK_OP_REF_AGENT_NOTIFICATIONS="op://Employee/Slack notify/agent-notifications"` (resolved via `op read` at call time).
 
-   A webhook URL reveals nothing about its channel, so the variable name is the only place that lives. `--to releases` reads `SLACK_WEBHOOK_URL_RELEASES` — uppercased, with `-` and `.` becoming `_`, so `--to claude-plugins` reads `SLACK_WEBHOOK_URL_CLAUDE_PLUGINS`. The unsuffixed `SLACK_WEBHOOK_URL` works as a default when there is only one webhook, but it tells the next reader nothing.
+   Name it for the role the notifications play, not the channel behind it: a webhook URL reveals nothing about where it posts, and the channel can be re-pointed while the role stays put. `--to agent-notifications` reads `SLACK_WEBHOOK_URL_AGENT_NOTIFICATIONS` — uppercased, with `-` and `.` becoming `_`. The unsuffixed `SLACK_WEBHOOK_URL` works as a default when there is only one webhook, but it tells the next reader nothing.
 
 > **The URL is the credential.** Anyone holding it can post to that channel. Never put it in a repo, an issue, a PR, or a transcript — Slack actively searches for leaked webhook URLs and revokes the ones it finds. If a send starts failing with `no_service` after previously working, assume that's what happened and regenerate it.
 
 ### Verify
 
 ```bash
-bash skills/notify-slack/scripts/notify.sh --to releases --check
+bash skills/notify-slack/scripts/notify.sh --to agent-notifications --check
 ```
 
 Validates deps and the URL **without sending anything**, and prints the endpoint with its secret tail withheld. Incoming webhooks have no auth-check endpoint, so a pass doesn't prove the URL is still live — send one real message to confirm that.
@@ -123,19 +123,19 @@ Validates deps and the URL **without sending anything**, and prints the endpoint
 
 ```bash
 # Simple notification
-skills/notify-slack/scripts/notify.sh --to releases 'Deploy finished: 4 services green.'
+skills/notify-slack/scripts/notify.sh --to agent-notifications 'Deploy finished: 4 services green.'
 
 # Multi-line, from a file (keeps the text out of `ps`)
-skills/notify-slack/scripts/notify.sh --to releases --text-file /tmp/summary.md
+skills/notify-slack/scripts/notify.sh --to agent-notifications --text-file /tmp/summary.md
 
 # Inspect the exact payload and destination without sending
-skills/notify-slack/scripts/notify.sh --to releases --dry-run --text-file /tmp/summary.md
+skills/notify-slack/scripts/notify.sh --to agent-notifications --dry-run --text-file /tmp/summary.md
 
 # Reply in a thread (get the ts from read-slack)
-skills/notify-slack/scripts/notify.sh --to releases --thread-ts 1763502924.627409 'Fixed in 3ecbf8920.'
+skills/notify-slack/scripts/notify.sh --to agent-notifications --thread-ts 1763502924.627409 'Fixed in 3ecbf8920.'
 
 # Block Kit layout; --text is the notification fallback line
-skills/notify-slack/scripts/notify.sh --to releases --text 'Nightly suite: 2 failures' --blocks-file /tmp/blocks.json
+skills/notify-slack/scripts/notify.sh --to agent-notifications --text 'Nightly suite: 2 failures' --blocks-file /tmp/blocks.json
 ```
 
 Slack's markup is not Markdown (`*bold*`, `<url|label>`, no headings or tables). The `collab-tools` plugin's `temp-draft` skill carries the full reference at `skills/temp-draft/references/slack-formatting.md`.
@@ -148,7 +148,7 @@ One webhook, one channel — a second channel means a second webhook, named the 
 
 ```bash
 export SLACK_WEBHOOK_URL_ALERTS=https://hooks.slack.com/services/…
-export SLACK_WEBHOOK_URL_ENG=https://hooks.slack.com/services/…
+export SLACK_WEBHOOK_URL_DEPLOYS=https://hooks.slack.com/services/…
 ```
 
 ```bash

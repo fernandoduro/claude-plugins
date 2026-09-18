@@ -20,12 +20,12 @@ The trade-off is that the destination is fixed. `channel`, `username`, and `icon
 
 ## Setup (one time)
 
-The script needs a webhook URL and the `curl` + `jq` tools. The plugin README walks through it: create a Slack app, activate Incoming Webhooks, **Add New Webhook to Workspace**, pick the channel, copy the URL. That README is at `${CLAUDE_PLUGIN_ROOT}/README.md` — Codex: substitute the installed plugin directory for that token. Then store the URL under a name that says where it posts:
+The script needs a webhook URL and the `curl` + `jq` tools. The plugin README walks through it: create a Slack app, activate Incoming Webhooks, **Add New Webhook to Workspace**, pick the channel, copy the URL. That README is at `${CLAUDE_PLUGIN_ROOT}/README.md` — Codex: substitute the installed plugin directory for that token. Then store the URL under a name that says what the notifications are for:
 
-- `export SLACK_WEBHOOK_URL_RELEASES=https://hooks.slack.com/services/…`, or
-- `export SLACK_WEBHOOK_OP_REF_RELEASES="op://Employee/Slack notify/releases"` (1Password ref; the script resolves it via `op read` so the URL never sits in your shell env).
+- `export SLACK_WEBHOOK_URL_AGENT_NOTIFICATIONS=https://hooks.slack.com/services/…`, or
+- `export SLACK_WEBHOOK_OP_REF_AGENT_NOTIFICATIONS="op://Employee/Slack notify/agent-notifications"` (1Password ref; the script resolves it via `op read` so the URL never sits in your shell env).
 
-**Name every webhook for its destination.** A webhook URL reveals nothing about which channel it posts to, so the variable name is the only place that information lives — and `--to` refuses to fall back, so a name that doesn't resolve is an error rather than a message in the wrong channel. `--to releases` reads `SLACK_WEBHOOK_URL_RELEASES` (uppercased, with `-` and `.` becoming `_`), so `--to claude-plugins` reads `SLACK_WEBHOOK_URL_CLAUDE_PLUGINS`. The unsuffixed `SLACK_WEBHOOK_URL` works as a default when there is exactly one webhook, but it tells the next reader nothing.
+**Name every webhook for the role its notifications play, not for the channel behind it.** A webhook URL reveals nothing about where it posts, so the variable name is the only place that meaning lives — and a role name survives re-pointing the webhook at a different channel, which a channel name would not. `--to agent-notifications` reads `SLACK_WEBHOOK_URL_AGENT_NOTIFICATIONS` (uppercased, with `-` and `.` becoming `_`). `--to` refuses to fall back, so a name that doesn't resolve is an error rather than a message in the wrong place. The unsuffixed `SLACK_WEBHOOK_URL` works as a default when there is exactly one webhook, but it tells the next reader nothing.
 
 **The URL is a bearer secret.** Anyone holding it can post to that channel, so it never goes in a repo, an issue, or a transcript — Slack actively searches for leaked webhook URLs and revokes them. The script hands it to `curl` on stdin, so it stays out of `ps` and shell history.
 
@@ -34,7 +34,7 @@ The script needs a webhook URL and the `curl` + `jq` tools. The plugin README wa
 ```bash
 # Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
 SKILL_DIR="${CLAUDE_SKILL_DIR}"
-bash "$SKILL_DIR/scripts/notify.sh" --check
+bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications --check
 ```
 
 This validates deps and the URL **offline**. Incoming webhooks have no auth-check endpoint — the only way to prove a URL is still live is to post with it — so a passing `--check` does not promise delivery. Confirm that by sending one real message.
@@ -44,7 +44,7 @@ This validates deps and the URL **offline**. Incoming webhooks have no auth-chec
 ```bash
 # Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
 SKILL_DIR="${CLAUDE_SKILL_DIR}"
-bash "$SKILL_DIR/scripts/notify.sh" --to releases 'Deploy finished: 4 services green, 0 rollbacks.'
+bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications 'Deploy finished: 4 services green, 0 rollbacks.'
 ```
 
 For anything multi-line, or anything you would not want in `ps` output, use a file or stdin instead of an argument:
@@ -52,7 +52,7 @@ For anything multi-line, or anything you would not want in `ps` output, use a fi
 ```bash
 # Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
 SKILL_DIR="${CLAUDE_SKILL_DIR}"
-bash "$SKILL_DIR/scripts/notify.sh" --text-file /tmp/summary.md
+bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications --text-file /tmp/summary.md
 ```
 
 Slack's message markup is not Markdown — `*bold*` not `**bold**`, `<url|label>` not `[label](url)`, and no headings or tables. The full reference ships with the `collab-tools` plugin, in its `temp-draft` skill under `references/slack-formatting.md`; read it before composing anything with formatting in it.
@@ -65,7 +65,7 @@ One webhook, one channel — so reaching a second channel means a second webhook
 
 ```bash
 export SLACK_WEBHOOK_URL_ALERTS=https://hooks.slack.com/services/…
-export SLACK_WEBHOOK_URL_ENG=https://hooks.slack.com/services/…
+export SLACK_WEBHOOK_URL_DEPLOYS=https://hooks.slack.com/services/…
 ```
 
 ```bash
@@ -83,7 +83,7 @@ A webhook post returns no timestamp, so the `ts` to reply under has to come from
 ```bash
 # Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
 SKILL_DIR="${CLAUDE_SKILL_DIR}"
-bash "$SKILL_DIR/scripts/notify.sh" --thread-ts 1763502924.627409 'Fixed in 3ecbf8920.'
+bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications --thread-ts 1763502924.627409 'Fixed in 3ecbf8920.'
 ```
 
 The parent message has to be in the webhook's own channel — the webhook cannot reach any other. A `ts` from elsewhere is not something Slack documents an error for, so verify the reply landed where you meant rather than trusting the `Sent to Slack` line alone.
@@ -95,7 +95,7 @@ For richer layout, pass a JSON **array** of blocks. `--text` becomes the notific
 ```bash
 # Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
 SKILL_DIR="${CLAUDE_SKILL_DIR}"
-bash "$SKILL_DIR/scripts/notify.sh" --text 'Nightly suite: 2 failures' --blocks-file /tmp/blocks.json
+bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications --text 'Nightly suite: 2 failures' --blocks-file /tmp/blocks.json
 ```
 
 ## Before sending
@@ -108,7 +108,7 @@ Posting into a channel is outward-facing and **cannot be undone** — incoming w
 ```bash
 # Codex: this path resolves under Claude Code; substitute the directory containing this SKILL.md.
 SKILL_DIR="${CLAUDE_SKILL_DIR}"
-bash "$SKILL_DIR/scripts/notify.sh" --dry-run --text-file /tmp/summary.md
+bash "$SKILL_DIR/scripts/notify.sh" --to agent-notifications --dry-run --text-file /tmp/summary.md
 ```
 
 A dry run is never a send. Report success only when the script prints `Sent to Slack.` — it says that only on HTTP 200 with a literal `ok` body.
