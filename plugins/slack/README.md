@@ -103,6 +103,8 @@ The cost of that smallness is that the destination is fixed. `channel`, `usernam
 
 4. **Copy the URL** from **Webhook URLs for Your Workspace**. It has the shape `https://hooks.slack.com/services/<team>/<hook>/<secret>`.
 
+   While you're in the app settings, `assets/claude-notify.png` in this plugin is an app icon you can upload under **Display Information → App icon** (1254×1254, comfortably over Slack's 512 minimum) — a paper plane on `#2C2D30`, the background colour Slack defaults that page to, so the icon tile and the app banner read as one piece. `assets/claude-notify.svg` is the vector source if you want to recolour it or export another size.
+
 5. **Store it under a name that says what the notifications are for.** Either:
    - `export SLACK_WEBHOOK_URL_AGENT_NOTIFICATIONS=https://hooks.slack.com/services/…`, **or**
    - `export SLACK_WEBHOOK_OP_REF_AGENT_NOTIFICATIONS="op://Employee/Slack notify/agent-notifications"` (resolved via `op read` at call time).
