@@ -41,6 +41,13 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   naming one operator five times, and three more skills still do. `tests/skill-voice.test.mjs`
   fails on any new one; say "the user" or "you", and they/them where a pronoun is
   unavoidable. (claude-plugins-dw67, cc6a3a4)
+- **A doc's examples must pass the flags the mechanism requires.** The dial skill's
+  only session-ID example omitted `--resume`, so every agent that copied it dialed a
+  fresh callee into the right repo and relayed an answer invented by a brain that had
+  never seen that conversation — with `status: connected` and empty `.fallbacks`,
+  nothing looked wrong. When a flag is what makes an invocation mean what the prose
+  says, grep the examples for it before closing the change-set.
+  (claude-plugins-oqvt, hotline 0.34.1)
 - **Pair every prohibition with its recovery action.** "Do NOT re-dial" without
   "read pending_paste.md, surface stage deliver" leaves the reader with nothing to
   do. (claude-plugins-zrq1)

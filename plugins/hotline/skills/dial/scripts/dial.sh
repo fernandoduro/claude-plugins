@@ -62,6 +62,12 @@
 # Nothing else distinguishes two callees dialled into one repo. A missing or
 # empty/whitespace-only value is an args error.
 #
+# --resume <session-id> adopts an EXISTING conversation. A session id in --target
+# only resolves the WORKSPACE its transcript lives in, so the callee that lands
+# there has none of that session's context: a question about what it said or did
+# needs --resume too. It forks by default, so hotline protocol noise stays out of
+# the original transcript; --no-fork contributes to it instead.
+#
 # --fresh ignores this caller's cached session AND cached surface for the resolved
 # target, so the dial opens a BRAND-NEW callee session instead of resuming the one
 # a previous dial left behind — the flag for a phase that must not inherit the

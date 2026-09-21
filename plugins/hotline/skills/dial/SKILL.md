@@ -16,8 +16,16 @@ status it returns.
 
 ## Arguments
 
-- **`$0`** (optional): Workspace reference — a dirmap ID, path, session ID, or fuzzy name.
+- **`$0`** (optional): Where to dial — a dirmap ID, path, or fuzzy name. A
+  **session ID is not a fourth form of the same thing**: it resolves that session's
+  *workspace*, so it names a directory and the callee that lands there has never
+  seen the conversation. Reaching the conversation is `--resume`, below.
 - **`$1+`** (optional): The task/question for the remote workspace.
+- **`--resume <session-id>`**: boot the callee with that session's **conversation**,
+  not just its directory. Required whenever the message is about what that session
+  said, did, or decided — "what went wrong?", "summarize your last turn". Forks by
+  default, so hotline protocol noise stays out of the original transcript; `--no-fork`
+  contributes to it instead. → `--resume <session-id>` `[--no-fork]`
 - **`--headless`**: force the headless transport (`claude -p`) for this dial even when cmux is up. Debugging the headless path, A/B-ing transports, or wanting `claude -p`'s structured output. Costs programmatic-usage credit; the cmux default doesn't. → `--headless`
 - **`--detached`** / **`--new-workspace`**: spawn the callee in a disconnected new workspace tab instead of a side-by-side surface. The tab auto-closes once the response is captured, so nothing is left to watch or clean up. → `--placement detached`
 - **`--window <name|ref>`**: land the callee as a surface in a specific cmux window (find-or-create), for grouping workers by project. A `window:<n>` ref targets that window; a bare name reuses the window holding a workspace titled `<name>`. Wins over `--detached` if both are given. → `--window <name|ref>`
@@ -28,7 +36,8 @@ status it returns.
 ```
 /hotline:hotline-dial dotfiles what branch are you on?
 /hotline:hotline-dial coaching write the about page
-/hotline:hotline-dial 5b1dda91-... what went wrong?
+/hotline:hotline-dial --resume 5b1dda91-... what went wrong?   # that session's context
+/hotline:hotline-dial 5b1dda91-... run the test suite          # only its workspace
 /hotline:hotline-dial --headless dotfiles what branch are you on?
 /hotline:hotline-dial --detached dotfiles run the full test suite
 /hotline:hotline-dial --window lindris backend tests, please
@@ -325,12 +334,21 @@ what the user said, confirm before relaying anything:
 
 Skip the confirmation only when the match is plainly correct ("blog" → `my-blog`).
 
-**Fork or assist, when the user hands you a session ID.** That's someone else's
-conversation. Pass `--resume <session-id>` and the wrapper **forks** it by
-default, so hotline protocol noise doesn't land in their transcript. If the
-user's intent is clearly to *help that session* ("continue that conversation",
-"help it fix its bug"), add `--no-fork` to contribute to it directly. When in
-doubt, fork.
+**A session ID in `--target` reaches the directory, not the conversation.** The
+resolver reverse-looks-up the UUID to the workspace its transcript lives in and
+stops there, so the callee boots in the right repo with a blank slate. When the
+user hands you a session ID and the message is *about that conversation* — "what
+went wrong?", "summarize your last turn", "why did you take that approach?" —
+pass `--resume <session-id>` as well, or you will relay an answer invented by a
+brain that was never in the room. **Nothing in the payload flags this**: `.status`
+is `connected`, `.workspace` is correct, `.fallbacks` is empty, and the reply reads
+plausibly. A session ID plus work that needs only the *repo* ("run the suite
+there") is the one shape that wants no `--resume`.
+
+**Then fork or assist.** `--resume` **forks** by default, so hotline protocol
+noise doesn't land in their transcript. If the user's intent is clearly to *help
+that session* ("continue that conversation", "help it fix its bug"), add
+`--no-fork` to contribute to it directly. When in doubt, fork.
 
 **Fresh phase, fresh session.** A re-dial to the same target silently resumes
 the cached session. When the next dispatch must NOT inherit the previous one's

@@ -48,7 +48,7 @@ You can also dial a specific Claude Code session directly:
 
 > "Dial session 5b1dda91-a3c1-45f9-b967-aa9dac221e59 and ask what branch it's on."
 
-Hotline reverse-looks up the session ID to find the workspace from the transcript files. When dialing someone else's session, it **forks by default** to avoid cluttering their conversation. If you explicitly want to contribute to that session (e.g., "help that session fix its bug"), the agent passes `--no-fork` and the call lands in their transcript.
+Hotline reverse-looks up the session ID to find the workspace from the transcript files, which gets the callee into the right directory. Reaching the *conversation* is a second step: the agent passes `--resume <session-id>`, booting the callee with that session's context and **forking** by default to avoid cluttering the original transcript. Without `--resume` you get a fresh Claude in that workspace — right for "run the tests over there", useless for "what went wrong?". If you explicitly want to contribute to that session (e.g., "help that session fix its bug"), the agent passes `--no-fork` and the call lands in their transcript.
 
 ### Messaging a Session That's Already Running (native fast path)
 
