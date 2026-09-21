@@ -587,9 +587,21 @@ above still does that:
   and its split live in `herdr_tab_label` (`scripts/herdr-state.sh`).
 - **`HOTLINE_HERDR_SPLIT_DIRECTION=right|down`** — which way a `split` placement
   goes (default `right`).
-- **`HOTLINE_HERDR_PANE_SETTLE=<seconds>`** — pause before starting the agent in a
-  freshly split pane (default 1). `agent start` requires the pane to be at its shell
-  prompt, and starting too early fails `agent_pane_busy` (which is then retried).
+- **`HOTLINE_HERDR_PANE_SETTLE=<seconds>`** — pause before the first readiness probe
+  of a freshly split pane (default 1), and the starting value the retry backoff
+  doubles from. `agent start` requires the pane to be at its shell prompt.
+- **`HOTLINE_HERDR_START_BUDGET=<seconds>`** — the whole wall clock the launcher may
+  spend getting the pane to its prompt and retrying a busy start (default 30). The
+  wait itself is a poll on `pane process-info` — the pane is available exactly when
+  its foreground process group is the shell — so a slow shell costs poll time, not
+  start attempts. Exhausting the budget lets the next start go ahead so herdr's own
+  refusal is what gets reported.
+- **`HOTLINE_HERDR_READY_POLL=<seconds>`** — how often that poll re-reads the pane
+  (default 0.5).
+- **`HOTLINE_HERDR_START_ATTEMPTS=<n>`** — how many `agent start` invocations to make
+  after herdr reports the pane ready (default 4). Readiness is read one instant and
+  acted on the next, so this covers only that race; the wait for a booting shell is
+  `HOTLINE_HERDR_START_BUDGET`'s job, not this one's.
 - **`HOTLINE_HERDR_FIRST_SETTLE=<seconds>`** — pause between `agent start`'s
   readiness claim and the FIRST delivery into that agent (default 1). `agent start`
   reports the REPL interactive-ready once, at return, and under load that claim can

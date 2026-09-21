@@ -365,11 +365,16 @@ echo "$NEW_PANE" > "$CALL_DIR/herdr_pane.txt"
 
 # ---- Start the agent. -------------------------------------------------------
 # `agent start` requires the pane to be AT ITS INTERACTIVE SHELL PROMPT, and a
-# freshly split pane needs a moment to get there — starting immediately can fail
-# `agent_pane_busy`. So: settle, then retry that specific failure a few times
-# rather than turning a race into a dead call.
+# freshly split pane needs a moment to get there. How long is not a constant: on a
+# loaded box a shell's rc files take seconds, and four one-second attempts were not
+# enough — the dial died `agent_pane_busy` with the pane still booting. So the wait
+# is a POLL on herdr's own readiness signal, governed by one wall-clock budget, and
+# the retries are left to cover only the residual race between reading readiness and
+# acting on it.
 SETTLE="${HOTLINE_HERDR_PANE_SETTLE:-1}"
 START_ATTEMPTS="${HOTLINE_HERDR_START_ATTEMPTS:-4}"
+START_BUDGET="${HOTLINE_HERDR_START_BUDGET:-30}"
+READY_POLL="${HOTLINE_HERDR_READY_POLL:-0.5}"
 
 # The claude argv, passed through verbatim after `--` (verified live on herdr
 # 0.8.0). An ARRAY, not a string: herdr hands these to claude as argv elements, so
@@ -435,9 +440,24 @@ AGENT_NAME=""
 START_OUT=""
 START_ERR=""
 attempt=0
+START_DEADLINE=$(( $(date +%s) + START_BUDGET ))
+backoff="$SETTLE"
 while [[ $attempt -lt $START_ATTEMPTS ]]; do
   attempt=$((attempt + 1))
-  sleep "$SETTLE"
+  sleep "$backoff"
+
+  # Wait for the shell, not for the clock. A herdr that cannot answer the question
+  # (rc 2 — older build, unreadable pane) ends the poll immediately and leaves the
+  # backoff below as the only guard, which is what shipped before this signal
+  # existed; an unfalsifiable wait would be worse than a bounded retry. Running out
+  # of budget also ends it and lets the start go ahead, because herdr's own refusal
+  # is a better diagnostic than any this loop could invent.
+  while :; do
+    pane_ready=0; herdr_pane_shell_ready "$NEW_PANE" || pane_ready=$?
+    [[ $pane_ready -ne 1 ]] && break
+    [[ $(date +%s) -ge $START_DEADLINE ]] && break
+    sleep "$READY_POLL"
+  done
 
   # A fresh name per attempt: a start that failed for a reason OTHER than a busy
   # pane may still have consumed the name, and herdr rejects a duplicate outright.
@@ -459,6 +479,10 @@ while [[ $attempt -lt $START_ATTEMPTS ]]; do
     *) break ;;
   esac
   START_OUT=""
+  [[ $(date +%s) -ge $START_DEADLINE ]] && break
+  # Widening, so a pane that is slow rather than stuck gets progressively more room
+  # without the attempt count having to grow. awk because SETTLE may be fractional.
+  backoff=$(awk -v b="$backoff" 'BEGIN{ b *= 2; if (b > 4) b = 4; printf "%g", b }')
 done
 
 [[ -n "$START_ERR" ]] && fail_async "herdr agent start failed in pane $NEW_PANE after ${attempt} attempt(s): $START_ERR"

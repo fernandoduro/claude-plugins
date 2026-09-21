@@ -370,8 +370,11 @@ would be a lie they discover hours later. Report `.detail` and `.recovery` as-is
   input. `error.txt` in the call dir carries herdr's own diagnostic, and the pane has
   been closed so nothing leaks — set `HOTLINE_HERDR_KEEP_FAILED_PANE=1` and re-dial to
   keep it and read its scrollback.
-- `agent_pane_busy` is retried automatically (a freshly split pane needs a moment at
-  its shell prompt); seeing it in a final error means it never settled.
+- `agent_pane_busy` is waited out, not guessed at: the launcher polls
+  `pane process-info` until the pane's foreground process group is its shell, then
+  starts, then retries a busy start with a widening backoff — all inside
+  `HOTLINE_HERDR_START_BUDGET` (default 30s). Seeing it in a final error means the
+  pane never reached its prompt inside that budget; raise it for a loaded box.
 
 **A slash-command payload goes out as TWO writes, not one**
 - `agent prompt` submits text and Enter atomically, which is right for an ordinary

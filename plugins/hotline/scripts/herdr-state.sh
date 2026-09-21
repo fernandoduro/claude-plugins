@@ -336,6 +336,34 @@ herdr_agent_name_free() {  # <name>
   [[ -z "$(jq -r '.result.agent // empty' <<<"$HERDR_CLI_OUT" 2>/dev/null || true)" ]]
 }
 
+# --- Reading a pane that holds no agent yet ----------------------------------
+# Is this pane an "available shell" — the one precondition `agent start` imposes?
+# herdr's own wording is "at its interactive prompt, with the shell itself in the
+# foreground and no foreground command, editor, or agent running", and
+# `pane process-info` reports exactly that pair: the pane is available when its
+# foreground process group IS the shell.
+#
+#   $ herdr pane process-info --pane w28:p1
+#   {"result":{"process_info":{"foreground_process_group_id":7788,…,"shell_pid":7788}}}
+#
+# Three answers, not two. "Cannot tell" is its own outcome because a herdr that does
+# not report these fields must leave the caller with a bounded retry rather than an
+# unfalsifiable wait — the same rule HERDR_AGENT_READY follows for a missing
+# `interactive_ready`.
+#   0 — at its prompt
+#   1 — busy: something is running in the foreground
+#   2 — cannot tell; $HERDR_CLI_ERR says why when herdr refused outright
+herdr_pane_shell_ready() {  # <pane-id>
+  local fg shell
+  herdr_cli pane process-info --pane "$1" || return 2
+  fg=$(jq -r '.result.process_info.foreground_process_group_id // empty' \
+         <<<"$HERDR_CLI_OUT" 2>/dev/null || true)
+  shell=$(jq -r '.result.process_info.shell_pid // empty' \
+            <<<"$HERDR_CLI_OUT" 2>/dev/null || true)
+  [[ -z "$fg" || -z "$shell" ]] && return 2
+  [[ "$fg" == "$shell" ]]
+}
+
 # --- Reading a live agent ----------------------------------------------------
 # The settled lifecycle set: what "the callee stopped working" means, ready to
 # splice into an `agent wait` argv. Passed EXPLICITLY even though it is also herdr's

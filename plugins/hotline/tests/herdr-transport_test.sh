@@ -143,6 +143,10 @@ trap cleanup EXIT
 #   HERDR_STUB_NEW_WS         the workspace_id `workspace create` returns (default w5)
 #   HERDR_STUB_WS_CREATE_FAIL=1 `workspace create` returns a server error
 #   HERDR_STUB_BUSY_TIMES=N   the first N `agent start` calls fail agent_pane_busy
+#   HERDR_STUB_PANE_BUSY_TIMES=N the first N `pane process-info` calls report a
+#                             foreground command on top of the shell — the pane NOT
+#                             at its prompt, which is what the readiness poll waits
+#                             out before it ever calls `agent start`
 #   HERDR_STUB_START_FAIL=1   `agent start` fails with a non-retryable error
 #   HERDR_STUB_READY=false    `agent start` reports interactive_ready:false
 #   HERDR_STUB_OBSERVED_SID   the session id `agent start`/`agent get` report
@@ -218,6 +222,27 @@ case "$1 ${2:-}" in
       '{id:"cli:pane:split",result:{pane:{pane_id:$p}}}'
     exit 0 ;;
 
+  "pane process-info")
+    # Readiness, the way the real CLI reports it: the pane is at its interactive
+    # prompt exactly when the foreground process group IS the shell. A busy pane
+    # answers with a command's pgid instead.
+    [[ "${HERDR_STUB_PROCINFO_FAIL:-}" == "1" ]] && err pane_not_found "no such pane"
+    PBUSY="${HERDR_STUB_PANE_BUSY_TIMES:-0}"
+    PSEEN=0; [[ -f "$ST/pane_busy" ]] && PSEEN=$(cat "$ST/pane_busy")
+    PANE_ARG=""; _prev=""
+    for _i in "$@"; do [[ "$_prev" == "--pane" ]] && { PANE_ARG="$_i"; break; }; _prev="$_i"; done
+    FG="${HERDR_STUB_SHELL_PID:-4242}"
+    if [[ "$PSEEN" -lt "$PBUSY" ]]; then
+      echo $((PSEEN + 1)) > "$ST/pane_busy"
+      FG=9999
+    fi
+    jq -nc --arg p "$PANE_ARG" --argjson fg "$FG" \
+           --argjson sh "${HERDR_STUB_SHELL_PID:-4242}" \
+      '{id:"cli:pane:process_info",result:{type:"pane_process_info",
+         process_info:{pane_id:$p,shell_pid:$sh,foreground_process_group_id:$fg,
+                       foreground_processes:[]}}}'
+    exit 0 ;;
+
   "pane close") echo '{"id":"cli:pane:close","result":{"closed":true}}'; exit 0 ;;
 
   "pane get")
@@ -260,6 +285,19 @@ case "$1 ${2:-}" in
 
   "agent start")
     NAME="$3"
+    # A start into a pane that is NOT at its prompt is refused, the way the real
+    # herdr refuses one. Driven off the SAME counter `pane process-info` reports
+    # from, so a launcher that never asks about readiness cannot get past it — which
+    # is the production failure this fixture exists to reproduce.
+    if [[ -n "${HERDR_STUB_PANE_BUSY_TIMES:-}" ]]; then
+      PSEEN=0; [[ -f "$ST/pane_busy" ]] && PSEEN=$(cat "$ST/pane_busy")
+      if [[ "$PSEEN" -lt "$HERDR_STUB_PANE_BUSY_TIMES" ]]; then
+        TPANE=""; _prev=""
+        for _i in "$@"; do [[ "$_prev" == "--pane" ]] && { TPANE="$_i"; break; }; _prev="$_i"; done
+        printf '{"error":{"code":"agent_pane_busy","message":"agent target pane %s is not an available shell"}}\n' "$TPANE" >&2
+        exit 1
+      fi
+    fi
     # Retryable race: a freshly split pane whose shell is not at its prompt yet.
     BUSY="${HERDR_STUB_BUSY_TIMES:-0}"
     SEEN=0; [[ -f "$ST/busy" ]] && SEEN=$(cat "$ST/busy")
@@ -723,6 +761,75 @@ check "agent_pane_busy is retried (a freshly split pane needs a moment)" $? \
 [[ "$(grep -c 'agent start' "$t/herdr.log" 2>/dev/null)" -eq 3 ]]
 check "…exactly as many times as it took, then stops" $? \
   "agent start calls: $(grep -c 'agent start' "$t/herdr.log" 2>/dev/null)"
+
+# --- readiness, not a stopwatch --------------------------------------------
+# The bug this replaces: the launcher slept a fixed second and then spent its four
+# `agent start` attempts discovering the pane was not at its prompt yet. On a loaded
+# box (two pipeline runs plus a test suite) that budget ran out and a real work-order
+# dial died `agent_pane_busy`. `pane process-info` answers the question directly —
+# the pane is available exactly when its foreground process group IS the shell — so
+# the wait belongs in a poll on that, not in burned start attempts.
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" HERDR_STUB_PANE_BUSY_TIMES=3 \
+      HOTLINE_HERDR_READY_POLL=0 \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>"$t/err.txt")
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+[[ -n "$cd_path" && -s "$cd_path/herdr_agent.txt" && ! -f "$cd_path/error.txt" ]]
+check "a pane not yet at its prompt is WAITED for, not retried into the ground" $? \
+  "out=$out error=$(cat "$cd_path/error.txt" 2>/dev/null) stderr=$(cat "$t/err.txt")"
+[[ "$(grep -c 'pane process-info' "$t/herdr.log" 2>/dev/null)" -ge 4 ]]
+check "…by polling pane process-info until the shell is the foreground group" $? \
+  "process-info calls: $(grep -c 'pane process-info' "$t/herdr.log" 2>/dev/null)"
+[[ "$(grep -c 'agent start' "$t/herdr.log" 2>/dev/null)" -eq 1 ]]
+check "…so the start itself costs ONE attempt, not one per second of shell boot" $? \
+  "agent start calls: $(grep -c 'agent start' "$t/herdr.log" 2>/dev/null)"
+
+# A start that races past the poll anyway is still retried — readiness is read at one
+# instant and acted on at the next, so the backoff stays as the second guard.
+t=$(new_env)
+started=$(date +%s)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" HERDR_STUB_BUSY_TIMES=3 \
+      HOTLINE_HERDR_START_BUDGET=20 HOTLINE_HERDR_READY_POLL=0 \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>"$t/err.txt")
+elapsed=$(( $(date +%s) - started ))
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+[[ -n "$cd_path" && -s "$cd_path/herdr_agent.txt" && ! -f "$cd_path/error.txt" && $elapsed -lt 20 ]]
+check "agent_pane_busy N times then success still lands, inside the budget" $? \
+  "elapsed=${elapsed}s out=$out error=$(cat "$cd_path/error.txt" 2>/dev/null)"
+
+# --- the budget is the stop, and it still says what failed and where ---------
+t=$(new_env)
+started=$(date +%s)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" HERDR_STUB_NEW_PANE="w1:p9" \
+      HERDR_STUB_PANE_BUSY_TIMES=99999 HERDR_STUB_BUSY_TIMES=99999 \
+      HOTLINE_HERDR_START_BUDGET=2 HOTLINE_HERDR_READY_POLL=0 \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>"$t/err.txt")
+elapsed=$(( $(date +%s) - started ))
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+[[ -n "$cd_path" && -f "$cd_path/error.txt" ]] \
+  && grep -qE 'failed in pane w1:p9 after [0-9]+ attempt\(s\)' "$cd_path/error.txt" \
+  && grep -q 'agent_pane_busy' "$cd_path/error.txt"
+check "an exhausted budget still names the pane, the attempt count and the cause" $? \
+  "error=$(cat "$cd_path/error.txt" 2>/dev/null)"
+[[ $elapsed -lt 25 ]]
+check "…and stops at the budget instead of spending every attempt's full wait" $? \
+  "elapsed=${elapsed}s"
+
+# A herdr that cannot answer the readiness question must not become a hang: the poll
+# gives up on an unreadable pane and the bounded backoff carries the call, exactly as
+# it did before process-info existed.
+t=$(new_env)
+out=$(env PATH="$t/bin:$PATH" HOME="$t/home" HERDR_LOG="$t/herdr.log" \
+      HERDR_STATE="$t/state" HERDR_PANE_ID="w1:p1" HERDR_STUB_PROCINFO_FAIL=1 \
+      HERDR_STUB_BUSY_TIMES=1 HOTLINE_HERDR_READY_POLL=0 \
+      bash "$HERDR_ASYNC" --cwd "$t/target" --prompt "hi" 2>"$t/err.txt")
+cd_path=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+[[ -n "$cd_path" && -s "$cd_path/herdr_agent.txt" && ! -f "$cd_path/error.txt" ]]
+check "a herdr with no readiness answer degrades to the retry backoff, not a hang" $? \
+  "out=$out error=$(cat "$cd_path/error.txt" 2>/dev/null) stderr=$(cat "$t/err.txt")"
 
 # --- the SHIPPED settle default, with the override unset -------------------
 # The rest of this file collapses the settle to 0 for speed, which makes every other
@@ -2981,6 +3088,21 @@ check "SKILL.md's placement default matches herdr-call-async.sh" $? \
   && grep -q 'HOTLINE_HERDR_PANE_SETTLE:-1}' "$HERDR_ASYNC"
 check "SKILL.md's pane-settle default matches herdr-call-async.sh" $? \
   "script: $(grep -o 'HOTLINE_HERDR_PANE_SETTLE:-[0-9]*' "$HERDR_ASYNC")"
+
+[[ "$SKILL_FLAT" == *'retrying a busy start (default 30)'* ]] \
+  && grep -q 'HOTLINE_HERDR_START_BUDGET:-30}' "$HERDR_ASYNC"
+check "SKILL.md's start-budget default matches herdr-call-async.sh" $? \
+  "script: $(grep -o 'HOTLINE_HERDR_START_BUDGET:-[0-9]*' "$HERDR_ASYNC")"
+
+[[ "$SKILL_FLAT" == *'re-reads the pane (default 0.5)'* ]] \
+  && grep -q 'HOTLINE_HERDR_READY_POLL:-0.5}' "$HERDR_ASYNC"
+check "SKILL.md's readiness-poll default matches herdr-call-async.sh" $? \
+  "script: $(grep -o 'HOTLINE_HERDR_READY_POLL:-[0-9.]*' "$HERDR_ASYNC")"
+
+[[ "$SKILL_FLAT" == *'reports the pane ready (default 4)'* ]] \
+  && grep -q 'HOTLINE_HERDR_START_ATTEMPTS:-4}' "$HERDR_ASYNC"
+check "SKILL.md's start-attempts default matches herdr-call-async.sh" $? \
+  "script: $(grep -o 'HOTLINE_HERDR_START_ATTEMPTS:-[0-9]*' "$HERDR_ASYNC")"
 
 [[ "$SKILL_FLAT" == *'is really `blocked` (default 1)'* ]] \
   && grep -q 'HOTLINE_HERDR_BLOCKED_SETTLE:-1}' "$HERDR_REUSE"
