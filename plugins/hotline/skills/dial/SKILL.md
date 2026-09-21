@@ -295,7 +295,7 @@ expected, say).
 | `transport-auto→cmux(<reason>)` | `HOTLINE_TRANSPORT_AUTO=1` was set inside a herdr pane, but the herdr preflight failed — so the dial went to the cmux default instead. A degrade, not an error: nothing explicit was asked for. `<reason>` is the preflight's own (no server, no splittable pane, herdr not installed). |
 | `herdr-conference-focus-failed(<agent>: <reason>)` | A herdr conference connected and the callee has the prompt, but `herdr agent focus` refused — so the user's focus did not move. Tell them which pane to go to (`herdr agent attach <agent>`). |
 | `identity→refreshed` / `identity→refresh-failed(...)` | `--refresh-identity` ran (or tried to). |
-| `session-cache→fresh(<session-id>)` | `--fresh` found a cached session for this target and deliberately did not resume it; `<session-id>` is the one abandoned. The call reports `first_contact: true`, and the cache now points at the new session. |
+| `session-cache→fresh(<session-id>)` | `--fresh` found a cached session for this target and deliberately did not resume it; `<session-id>` is the one abandoned. This entry is added before the new callee is launched, so it appears on a failed dial too — the repoint it implies only actually happens on a **successful** one (boot-confirm is what writes the new session into the cache). A dial that reports this entry AND an error left the cache pointing at the same abandoned id it always did; retrying still names that same id until a dial through this stage succeeds. On success: the call reports `first_contact: true`, and the cache now points at the new session. |
 | `abandoned-callee(<handle> on <box>; …)` | `--fresh` overrode a box mismatch, so the callee named here is still RUNNING on `<box>` and no local cleanup will reach it. The entry carries the command that closes it (`ssh <box> herdr pane close <pane>`, or `herdr agent list` when no call dir still remembers the pane). Without `--fresh` this state is a `stage: transport` refusal instead. |
 | `session-cache→fresh(transport <a>→<b>)` | The cached handle belongs to a different BACKEND on this machine (a cmux surface is not a herdr agent name), so it was not re-addressed and the new callee starts without the prior context. A different BOX is a refusal, not this. |
 
@@ -354,8 +354,10 @@ that session* ("continue that conversation", "help it fix its bug"), add
 the cached session. When the next dispatch must NOT inherit the previous one's
 context — a reviewer for work this caller's last callee implemented, any
 pipeline phase whose value is a skeptical fresh read — pass `--fresh`: it
-ignores the cached session and surface, opens a brand-new session, and repoints
-the cache at it (`.fallbacks` records `session-cache→fresh(<abandoned id>)`).
+ignores the cached session and surface and opens a brand-new session — and, if
+that dial succeeds, repoints the cache at it (`.fallbacks` records
+`session-cache→fresh(<abandoned id>)`; see the table above for what a *failed*
+`--fresh` dial leaves the cache pointing at instead).
 A plain re-dial is for continuing a conversation; `--fresh` is for starting
 one in the same workspace with a new brain.
 
@@ -473,7 +475,13 @@ Exit codes that are not failures:
   real trust decision, and no help against the startup trust dialog, which no
   permissions knob bypasses. See § Environment knobs.)
 
-Clean up when the exchange is done: `rm -rf "$CALL_DIR"`.
+Clean up when the exchange is done: `rm -rf "$CALL_DIR"`. That is the happy
+path only — a terminal failure (`stage` other than `deliver`) already drops its
+own `pending_paste.md`, and the wrapper reaps whatever call dir is left, of any
+age past `HOTLINE_CALL_SWEEP_DAYS` (default 3 days), at the start of the next
+dial. `deliver` failures keep everything: the pending prompt there is the
+surviving copy the recovery path reads, and it is left for you or the caller to
+clean up once the exchange actually resolves.
 
 Follow-ups need nothing special: dial the same target again with the next
 message. The wrapper finds the cached session, re-addresses the host it lives in —
@@ -543,6 +551,14 @@ Set these in `~/.claude/settings.json`'s `"env"` block or the shell:
   escape hatch when identity discovery fails.
 - **`HOTLINE_SURFACE_READY_TIMEOUT=<seconds>`** — PTY-readiness budget for a new
   surface (default 8).
+- **`HOTLINE_CALL_SWEEP_DAYS=<n>`** — age floor (default 3) for the TTL sweep
+  that runs at the start of every dial, reaping `hotline-call-*` dirs under
+  `HOTLINE_CALL_HOME` (default `/tmp`) older than this. `find -mtime` drops the
+  fractional day, so the effective floor is **n+1 full days**: at the default, a
+  dir 3 days 23 hours old survives one more hour. It errs toward sparing, never
+  toward reaping something too young. Catches whatever a
+  caller's own `rm -rf "$CALL_DIR"` never reached — a call nobody followed up
+  on, or one that failed at a stage this file doesn't clean up itself.
 - **`HOTLINE_PASTE_BOX_TIMEOUT=<seconds>`** — how long delivery waits for the
   callee's REPL to draw its input box before refusing to paste. Defaults to
   `--boot-timeout` (itself 60 for cmux), because both are waiting for the same

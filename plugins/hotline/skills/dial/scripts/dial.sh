@@ -179,6 +179,23 @@ fb_json() {
 # delivery error's advice turns on `sent`, and forwarding it beats asking the model to
 # consult a result it never sees.
 emit_error() {  # emit_error <stage> <detail> <recovery> [<extra-json-object>]
+  # A stage that will never be retried should not keep the work-order text
+  # around forever (claude-plugins-x7m9) — only the PAYLOAD goes, never the
+  # whole call dir, so error.txt/surface_err.txt stay put for the recovery text
+  # below to point at. `deliver` is deliberately excluded: pending_paste.md
+  # there is the one surviving copy of the prompt, and references/error-
+  # recovery.md's Delivery section tells the model to read it — the callee may
+  # still be live and may still receive it. `fire` is excluded too: its own
+  # early-validation failures (bad args, a missing prompt file) never get as
+  # far as creating a call dir, and a cmux-call-async.sh failure that DID
+  # create one reports through `boot` instead (wait-for-session.sh is what
+  # reads its done+error.txt) — so nothing of ours reaches `fire` with a
+  # call dir to clean.
+  case "$1" in
+    args|identity|resolve|transport|boot)
+      [[ -n "$CALL_DIR" ]] && rm -f "$CALL_DIR/pending_paste.md" 2>/dev/null
+      ;;
+  esac
   jq -n --arg stage "$1" --arg detail "$2" --arg recovery "$3" \
         --arg call_dir "$CALL_DIR" --argjson fallbacks "$(fb_json)" \
         --argjson extra "${4:-{\}}" \
@@ -519,6 +536,31 @@ else
 fi
 [[ -z "$MESSAGE" ]] && emit_error args "The message is empty" \
   "Put the task/question in --prompt-file (or --prompt) before dialing."
+
+# --- TTL sweep: reap abandoned call dirs before minting a new one. ----------
+# Cleanup on the happy path is the CALLER's job (SKILL.md's `rm -rf "$CALL_DIR"`),
+# and a terminal failure below cleans its own pending_paste.md — but neither
+# covers a call dir a caller never got back to, or the wrapper's own dirs from
+# stages that don't run this cleanup (deliver's, deliberately, and any wrapped
+# in a script that crashed before dial.sh got control back). 296 such dirs, 218
+# with no `done` marker, were found abandoned on one machine — some for a week.
+# Best-effort and scoped to our own name pattern only, like the launch-script
+# sweep below: a dial must not fail because a sweep did (claude-plugins-qq9f).
+# `HOTLINE_CALL_HOME` already isolates test suites from the real /tmp; this
+# reuses it so the sweep never touches a directory the dial flow didn't itself
+# create. `HOTLINE_CALL_SWEEP_DAYS` overrides the age floor (default 3) — short
+# enough to bound the backlog above, long past the minutes a real exchange
+# takes to finish or a failure takes to be read and re-dialed.
+# `-mtime +N` DISCARDS THE FRACTIONAL DAY, so it means "at least N+1 full days
+# old", not "older than N days": at the default, a dir 3 days 23 hours old is
+# still spared and is reaped an hour later. That is the safe direction to be
+# wrong in — it never reaps something younger than the floor — but it is why a
+# backlog looks untouched for a day after this lands.
+# THE TRAILING SLASH IS LOAD-BEARING on macOS, where /tmp is a symlink to
+# /private/tmp: `find /tmp` without it reports the symlink itself, which
+# `-type d` then rejects, so the sweep would silently match nothing.
+find "${HOTLINE_CALL_HOME:-/tmp}/" -maxdepth 1 -type d -name 'hotline-call-*' \
+  -mtime "+${HOTLINE_CALL_SWEEP_DAYS:-3}" -exec rm -rf {} + 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Step 1 — Identity (re-entrant; see the header)
@@ -1586,6 +1628,14 @@ if ! REMOTE_SESSION_ID=$(bash "$DIAL_SCRIPTS/wait-for-session.sh" "${WAIT_ARGS[@
   BOOT_ERR=$(cat "$ERR_FILE")
   BOOT_RECOVERY="The callee's claude REPL never came up. Read \$call_dir/error.txt and surface_err.txt; see references/error-recovery.md § CMUX Failures. Do NOT silently re-dial."
   [[ "$BOOT_ERR" == *"TRUST DIALOG"* ]] && BOOT_RECOVERY="$TRUST_RECOVERY"
+  # The opener can die AFTER creating a real surface but BEFORE claude ever ran
+  # in it (cmux-call-async.sh's empty-stderr branch) — that surface is not
+  # nothing, and the generic message above reads as if it were. No UUID was
+  # recorded to close it BY, so this names how to find it instead of claiming
+  # a close this dial cannot safely perform (claude-plugins-yded).
+  if [[ "$BOOT_ERR" == *"before printing a surface_id"* ]]; then
+    BOOT_RECOVERY="A surface may have been created before the opener died — it never got as far as exec'ing claude into it, so it carries no \`hotline:\` session title and no UUID was recorded to close it by. Find it by hand: \`cmux tree --all --json --id-format both\`, then close whichever surface in this workspace still shows a plain shell prompt. See references/error-recovery.md § Surface placement, the 'opener resolved but errored' entry's stderr-empty case. Do NOT silently re-dial."
+  fi
   emit_error boot "$BOOT_ERR" "$BOOT_RECOVERY"
 fi
 

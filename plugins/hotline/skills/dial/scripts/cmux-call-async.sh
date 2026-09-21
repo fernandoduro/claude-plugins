@@ -539,6 +539,16 @@ else
       elif [[ -n "$ORPHAN" ]]; then
         echo "NOT reaping orphan surface $ORPHAN: the opener named it only by positional ref, which points at whatever occupies that slot now rather than at the surface it opened. Close it by hand — \`cmux tree --all --json --id-format both\` will say which UUID it is." \
           >> "$CALL_DIR/surface_err.txt"
+      elif [[ ! -s "$CALL_DIR/surface_err.txt" ]]; then
+        # The opener exited reporting NOTHING — a shell-level abort, not
+        # something cmux refused. Neither grep above can find a UUID to reap or
+        # a positional ref to refuse, but the opener may still have created a
+        # surface before dying: it hadn't reached the point of exec'ing claude
+        # into it, so it carries no `hotline:` session title, just the shell's
+        # own generic one. Named here (not just closed) because there is no
+        # UUID to close it BY — see the positional-ref refusal above.
+        echo "opener exited (rc=$rc) with no diagnostic at all, before printing a surface_id — it may have created a surface before dying, left with a generic shell title (no \`hotline:\` name) and no UUID recorded to close it by. Find it by hand: \`cmux tree --all --json --id-format both\`, then close whichever surface in this workspace still shows a plain shell prompt." \
+          >> "$CALL_DIR/surface_err.txt"
       fi
       SURF_ERR="$(cat "$CALL_DIR/surface_err.txt" 2>/dev/null)"
       if [[ "$rc" -eq 3 ]]; then

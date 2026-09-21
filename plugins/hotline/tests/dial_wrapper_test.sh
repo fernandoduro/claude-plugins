@@ -1434,6 +1434,15 @@ check "boot errors carry both detail and recovery" $? "out=$out"
 [[ -n "$(jq -r '.call_dir // empty' <<<"$out")" ]]
 check "boot errors keep the call_dir so its diagnostics are readable" $? "out=$out"
 
+# `boot` never gets a retry on this same call dir (a re-dial mints a new one),
+# so the abandoned pending_paste.md is dropped right away instead of leaking
+# forever — unlike `deliver`, where it is the surviving copy the recovery path
+# reads (claude-plugins-x7m9). error.txt/surface_err.txt are untouched: only
+# the payload goes.
+[[ -n "$call_dir" && ! -f "$call_dir/pending_paste.md" ]]
+check "…and drops pending_paste.md right away, since this call dir is never retried" $? \
+  "call_dir contents: $(ls -A "$call_dir" 2>/dev/null | tr '\n' ' ')"
+
 t=$(new_env); note_leak "$t"
 out=$(PATH="$t/bin:$PATH" HOME="$t/home" HOTLINE_CALLER_SESSION_ID="caller-aaaa" \
   HOTLINE_PENDING_DIR="$t/pending" \
