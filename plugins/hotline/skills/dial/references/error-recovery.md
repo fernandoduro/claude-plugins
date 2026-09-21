@@ -146,10 +146,32 @@ segment above.
 - Recovery: none needed by hand — `dial.sh` re-fires the call through the headless transport itself and records `cmux-cli-missing→headless` in `.fallbacks`. To force side-by-side, install the `cmux-cli` plugin; or pass `--detached` / `--window` (neither needs `cmux-cli`).
 
 **`open-side-surface failed` / `open-window-surface failed` in error.txt (opener resolved but errored)**
-- The opener ran but couldn't create the surface — usually `cmux identify` failed (socket unreachable) or `cmux tree` returned no panes.
-- Recovery: the error.txt carries the opener's stderr. If cmux itself is fine, retry with `--detached` (new-workspace placement, no `cmux identify` dependency). If `cmux identify` consistently fails, force headless with `--headless`.
+- This is the **residual bucket**, so it does not name one cause. `cmux-call-async.sh` sends rc 3 to *`surface <ref> PTY never became ready`* below and degrades the two context failures described further down; what reaches here matched none of those — a cmux error that is not `not_found`, a usage or dependency error from the opener (missing `jq`), or an exit that **reported nothing at all**.
+- **Branch on the stderr slot before anything else.** `error.txt` reads `open-side-surface.sh failed (rc=N): <stderr>`, and the two halves want opposite investigations:
+  - **Stderr present** — that is the opener's own diagnostic. Treat it as the error and stop reading here.
+  - **Stderr empty**, with `surface_err.txt` 0 bytes — the opener exited *without reporting*, which is a shell-level abort inside the opener, not something cmux refused. **Do not start on cmux**: `cmux identify` and `cmux tree` are usually both healthy in this shape, and a failed `identify` could not produce this error anyway — the degrade below is keyed on the opener's stderr text, so it would have landed as `surface-context→detached` instead. Run the opener directly to get the failure the dial swallowed:
+
+    Codex: this path resolves under Claude Code; substitute the installed Hotline plugin directory.
+
+    ```bash
+    PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"
+    OPENER=$(bash "$PLUGIN_ROOT/skills/dial/scripts/resolve-side-opener.sh")
+    bash "$OPENER" --caller --title "opener probe" --json; echo "rc=$?"
+    ```
+
+    Under `set -euo pipefail` an unguarded `read` consuming an empty lookup is fatal, which is the shape that produces exactly this signature; `bash -x` on that command names the line.
+- **An empty stderr also means no orphan was reaped.** The launcher finds a surface to close by grepping `surface_id=<uuid>` out of `surface_err.txt`, and refuses to act on a ref-only name because a positional `surface:N` renumbers. With that file empty, neither the reap nor its refusal note fires, so a surface the opener created before dying stays in the callee's pane carrying a generic shell title (`JT@host:~/path`) instead of a `hotline:` session name. Find and close it by UUID:
+
+  ```bash
+  cmux tree --all --json --id-format both \
+    | jq -r '.. | objects | select(.type? == "terminal") | "\(.id)  \(.title)"'
+  cmux close-surface --surface <uuid> --workspace <workspace-uuid>
+  ```
+
+  Close by UUID only, and keep your own surface out of the list — `cmux close-surface` echoes an `OK surface:N` that may already reflect post-close renumbering, so confirm from a fresh tree rather than from that echo.
 - **Two failures never reach this error**, because they auto-degrade: `could not resolve … from identify` (rc 2) and a `not_found` from cmux (rc 1) both mean the caller's own surface context is unusable, so the dial lands in a detached workspace and records `surface-context→detached` in `.fallbacks`. Side-by-side is the only placement needing that context; detached opens its own workspace. A side dial reporting `.placement: "detached"` with that fallback succeeded — read `.fallbacks` before re-dialing anything by hand.
 - **A `not_found` degrade means the target moved, not that the context was missing.** The opener pins `--workspace`/`--window` on every `new-surface` call and targets UUIDs wherever the tree carries them, so cmux is never left inferring the container: a `not_found` means the pane or its workspace changed between the opener's tree snapshot and the call. Read `surface_err.txt` on any dial reporting `surface-context→detached`.
+- Recovery, in order: fix what the standalone run reports; if cmux itself is unhealthy, force `--headless`; if the opener is the problem and the call has to go out now, `--detached` or `--window <name>` both bypass it (neither needs `cmux-cli`). Mention to the user that `--detached` puts the callee in its own tab rather than beside them.
 
 **`surface <ref> PTY never became ready`**
 - The new surface was created but its shell never echoed the readiness probe within the timeout (`surface-ready.sh` exited 3). Common causes: a very slow shell rc, a non-shell program in the surface, or the PTY backend never attaching.
