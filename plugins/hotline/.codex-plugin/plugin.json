@@ -1,6 +1,6 @@
 {
   "name": "hotline",
-  "version": "0.34.1",
+  "version": "0.34.2",
   "description": "Cross-workspace Claude Code communication. Dial another workspace to ask questions, delegate work, or collaborate in real-time.",
   "author": {
     "name": "JT Sternberg",
@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "Hotline",
     "shortDescription": "Call another workspace's agent, local or remote over SSH",
-    "longDescription": "Give your agents a phone. Dial another Claude Code workspace to ask a quick question, hand off an autonomous work order, or collaborate back-and-forth — with a live switchboard dashboard of every call.",
+    "longDescription": "Give your agents a phone. Dial another Claude Code workspace to ask a quick question, hand off an autonomous work order, or collaborate back-and-forth \u2014 with a live switchboard dashboard of every call.",
     "developerName": "JT Sternberg",
     "category": "Developer Tools",
     "capabilities": [

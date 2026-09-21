@@ -160,7 +160,7 @@ segment above.
     ```
 
     Under `set -euo pipefail` an unguarded `read` consuming an empty lookup is fatal, which is the shape that produces exactly this signature; `bash -x` on that command names the line.
-- **An empty stderr also means no orphan was reaped.** The launcher finds a surface to close by grepping `surface_id=<uuid>` out of `surface_err.txt`, and refuses to act on a ref-only name because a positional `surface:N` renumbers. With that file empty, neither the reap nor its refusal note fires, so a surface the opener created before dying stays in the callee's pane carrying a generic shell title (`JT@host:~/path`) instead of a `hotline:` session name. Find and close it by UUID:
+- **An empty stderr also means no orphan was reaped.** The launcher finds a surface to close by grepping `surface_id=<uuid>` out of `surface_err.txt`, and refuses to act on a ref-only name because a positional `surface:N` renumbers. With that file empty, neither the reap nor its refusal note fires, so a surface the opener created before dying stays in the callee's pane carrying whatever generic title the shell sets (`user@host:cwd`) instead of a `hotline:` session name. Find and close it by UUID:
 
   ```bash
   cmux tree --all --json --id-format both \
