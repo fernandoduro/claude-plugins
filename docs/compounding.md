@@ -229,8 +229,17 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   `IFS=$'\t' read -r a b c < <(jq …)` returns 1 when the lookup matches nothing, and
   `set -euo pipefail` turns that into an exit before any output — so a script that
   meant to *degrade* to a fallback aborts the whole call instead, silently and with
-  no diagnostic. Both cmux surface openers resolve ref→UUID this way; append
-  `|| true` and let the fallback below it run. (claude-plugins-h2et)
+  no diagnostic. Every cmux surface opener resolves ref→UUID this way: append
+  `|| true` and let the fallback below it run. Guarded by
+  `plugins/cmux-cli/tests/side-surface-scope_test.sh`'s unresolvable-echoed-ref case
+  and `cmux_close_surface_scoped`'s in `plugins/hotline/tests/`.
+  **This entry named two sites and only one was fixed**, for months: cmux echoes an
+  `OK surface:N` that a following `tree` does not resolve, so the unguarded read in
+  `open-side-surface.sh` aborted with rc=1 and *both* output streams empty, taking
+  every cmux-transport hotline dial with it and orphaning a surface per attempt. An
+  entry that names N sites is a liability until all N are changed — fix them in the
+  same change-set, or name the unfixed one as its own bead.
+  (claude-plugins-h2et, -99nu)
 - **A wrapped CLI's chatter stays out of every captured JSON.** `gws` prints
   "Using keyring backend" to stderr and hotline hit the same class from stdout, so
   a `2>&1` capture yields a file that looks fine and fails every parse downstream.

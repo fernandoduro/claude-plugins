@@ -23,6 +23,16 @@
 # value, not by substring. A tree whose window `.id` is null covers the
 # ref fallback for `--window`.
 #
+# One case covers a different failure in the same code path: cmux echoing a
+# `surface:N` it then does not resolve in a tree read. The opener looks that ref
+# up to trade it for UUIDs and names, and the `read` consuming that lookup is
+# fatal under `set -euo pipefail` when it comes back empty — so the script
+# aborted with rc=1, no stdout and no stderr, one line above the fallback
+# written for exactly that case, taking hotline's whole cmux transport with it
+# (`stage: boot`, `detail: "open-side-surface.sh failed (rc=1): "`). The guard
+# is `|| true`; this is what proves it is still there. (claude-plugins-99nu,
+# and the ledger's "guard a `read` that consumes a lookup" entry.)
+#
 # Driven entirely by a shimmed `cmux` on PATH — never touches real cmux.
 # =============================================================================
 set -u
@@ -104,6 +114,11 @@ case "$1" in
       && t=$(printf '%s' "$t" | jq '(.windows[].workspaces[].panes[].id) = null')
     [[ -n "${CMUX_FAKE_WINDOW_ID_NULL:-}" ]] \
       && t=$(printf '%s' "$t" | jq '(.windows[].id) = null')
+    # cmux echoes `OK surface:258` and then a tree read does not resolve that
+    # ref — observed live, and the shape that aborted the opener outright.
+    [[ -n "${CMUX_FAKE_NEW_SURFACE_MISSING:-}" ]] \
+      && t=$(printf '%s' "$t" | jq '(.windows[].workspaces[].panes[].surfaces) |=
+               map(select(.ref != "surface:258"))')
     printf '%s\n' "$t" ;;
   new-surface|new-pane)
     echo "$*" >> "$ST/create_calls"
@@ -232,7 +247,46 @@ else
        "rc=$rc4 out=$out4 err=$(cat "$tmp4/err.txt")"
 fi
 assert_pinned "window .id null" "$tmp4/create_calls" "$PANE_ADJACENT_ID" "window:1"
-
+# --- Case 5: cmux echoes a ref the tree does not resolve — degrade, don't die ---
+# The opener trades the echoed `surface:N` for UUIDs and names via a tree read.
+# When that lookup is empty, the `read` consuming it returns 1, which
+# `set -euo pipefail` turns into an abort — before the `${new_surface_id:-...}`
+# fallback on the very next line can run. The observable was rc=1 with nothing
+# on either stream, and it took out every cmux-transport hotline dial.
+tmp5=$(mktemp -d "${TMPDIR:-/tmp}/cmux-scope-e-XXXXXX"); make_shim "$tmp5"
+out5=$(PATH="$tmp5/bin:$PATH" CMUX_FAKE_STATE="$tmp5" CMUX_FAKE_NEW_SURFACE_MISSING=1 \
+       CMUX_SURFACE_ID="$SURF_CALLER_ID" CMUX_WORKSPACE_ID="$WS_X_ID" \
+       bash "$OPENER" --caller --title "scoped side surface" --json 2>"$tmp5/err.txt")
+rc5=$?
+if [[ $rc5 -eq 0 ]]; then
+  pass "unresolvable echoed ref — exits 0 instead of aborting silently"
+else
+  fail "unresolvable echoed ref — exits 0 instead of aborting silently" \
+       "rc=$rc5 out=[$out5] err=[$(cat "$tmp5/err.txt")]"
+fi
+if [[ -n "$out5" ]]; then
+  pass "unresolvable echoed ref — still emits its JSON payload"
+else
+  fail "unresolvable echoed ref — still emits its JSON payload" \
+       "rc=$rc5 stdout was empty; err=[$(cat "$tmp5/err.txt")]"
+fi
+want "unresolvable echoed ref — falls back to the parsed surface ref" \
+     "$(jq -r '.surface_ref' <<<"$out5" 2>/dev/null)" "surface:258"
+# An unknown UUID is reported as JSON `null`, which is the truthful answer and
+# is what the ref fallback above is for. It must never be the STRING "null":
+# `jq -r` renders both identically, so a consumer's `[[ -n "$SID" ]]` guard
+# passes either way and hands cmux `--surface null` — not an empty handle, so
+# cmux substitutes a target instead of refusing. Hence both assertions.
+if jq -e '.surface_id == null' <<<"$out5" >/dev/null 2>&1; then
+  pass "unresolvable echoed ref — .surface_id is JSON null, not a fake UUID"
+else
+  fail "unresolvable echoed ref — .surface_id is JSON null, not a fake UUID" "out=[$out5]"
+fi
+if jq -e '.surface_id | type != "string"' <<<"$out5" >/dev/null 2>&1; then
+  pass "unresolvable echoed ref — .surface_id is never the string \"null\""
+else
+  fail "unresolvable echoed ref — .surface_id is never the string \"null\"" "out=[$out5]"
+fi
 echo
 echo "side-surface-scope: $PASS passed, $FAIL failed"
 if [[ $FAIL -gt 0 ]]; then

@@ -336,7 +336,7 @@ if [[ -n "$tree_both" ]]; then
       | select(.ref == $s)
       | [(.id // ""), (.pane_id // ""), ($ws.id // ""), (.title // ""), ($ws.title // "")]
       | @tsv' 2>/dev/null | head -1
-  )
+  ) || true
 fi
 # Prefer UUIDs; fall back to the parsed refs when resolution came up empty.
 surface_handle="${new_surface_id:-$new_surface}"
