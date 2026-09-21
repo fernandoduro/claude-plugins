@@ -2,12 +2,29 @@
 
 `cmux set-progress` and `cmux set-status` are **one-shot writes**. The value you push sticks until you push another one. Call `set-progress 0.05` at the start of a long task and the pill sits at 5% forever — the user will ask "is this still working?" and they will be right to. cmux has no metric back-channel; the agent re-pushes values as work advances, and clears the sidebar when work ends.
 
-## The two-loop pattern
+## First: do you need a loop at all?
+
+**If all you need is "tell me when it's done", don't build a loop — block on an event.** `cmux events` returns the instant the thing happens and costs nothing while it waits:
+
+```bash
+# Another agent's turn ending.
+cmux events --category agent --name agent.hook.Stop \
+            --timeout 900 --no-ack --no-heartbeat 2>/dev/null \
+  | jq -c --arg s "$SURF_ID" \
+      'select(.payload.phase=="completed" and .surface_id==$s)' | head -1
+cmux notify --title "Agent finished" --body "…"
+```
+
+See [events.md](events.md) for the catalog and the traps. A progress *loop* is only warranted when the user wants to watch a **percentage advance** during the work — not merely learn that it ended.
+
+## The two-loop pattern (when you do want a live bar)
 
 1. **Updater** — periodically reads progress from somewhere (parses the running command's output, counts files in a dir, etc.) and re-pushes `set-progress` / `set-status`.
-2. **Exit detector** — decides when the underlying process is done so the updater stops and the UI gets cleared. Use **`pgrep -f <cmd-pattern>`** rather than screen-pattern matching: `pgrep` returns non-zero the instant the process exits, with no false positives from interactive prompts (`Mine this now? [Y/n]` looks like a shell prompt to a regex). The idiom: `while pgrep -f "<cmd-pattern>" >/dev/null; do …; sleep N; done`.
+2. **Exit detector** — decides when the underlying process is done so the updater stops and the UI gets cleared. Pick by what you're watching:
+   - **An agent in another surface** → `cmux events --name agent.hook.Stop` (authoritative turn boundary; see above).
+   - **A plain process** → **`pgrep -f <cmd-pattern>`**, which emits no events. Prefer it over screen-pattern matching: `pgrep` returns non-zero the instant the process exits, with no false positives from interactive prompts (`Mine this now? [Y/n]` looks like a shell prompt to a regex). The idiom: `while pgrep -f "<cmd-pattern>" >/dev/null; do …; sleep N; done`.
 
-In practice the two loops collapse into one — pgrep is the `while` condition; the body is the updater.
+In practice the two loops collapse into one — the exit detector is the `while` condition; the body is the updater.
 
 ## Worked example
 
@@ -46,6 +63,10 @@ The agent reads the running command's own output to derive progress — there is
 ## Always clear what you set
 
 Sidebar state persists. A stale "Running tests (3/42)" pill from a job that finished an hour ago pollutes the UI until something clears it. `set-progress`/`set-status` must be paired with `clear-progress`/`clear-status <key>` in the exit branch — treat them as open/close brackets.
+
+## Don't wake a model up to run the loop
+
+The loop above is **shell** work: one backgrounded `while` that pushes sidebar writes and exits on its own. It must not become a sequence of agent turns that each check once and reschedule — that burns a full turn per poll for a value the user is reading off the sidebar anyway. Fold the whole wait into one backgrounded loop, or block on an event. (`maestro:patient-waiting` has the full ladder.)
 
 ## Cap with `notify`
 

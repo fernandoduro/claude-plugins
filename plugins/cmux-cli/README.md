@@ -9,13 +9,18 @@ Exposes cmux's surface area to Claude:
 - **Windows / workspaces** — list, create, rename, focus, reorder, close
 - **Panes / surfaces / tabs** — split, focus, move, rename, close
 - **Terminal I/O** — `send` keystrokes, `read-screen`, `send-key`
+- **Events** — `cmux events`, the retained NDJSON stream. One blocking call replaces a polling loop ("wait until that agent's turn ends"), and the submission event's exact `message_length` turns "did my message get through?" from an inference off the input box into a measurement
 - **Notifications** — post toasts into a workspace
 - **Sidebar metadata** — status pills, progress bars, and log entries in the workspace sidebar (great for long-running agent work the user might look away from)
 - **Layouts** — save, inspect, and reproduce full split geometry (`layout save/get/open`); rebuild a whole split tree with `new-workspace --layout '<json>'`. The layout API is the only source of split orientation, divider ratios, and nesting — `tree` flattens all of that away.
 - **Browser automation** — drive cmux's embedded browser (navigate, click, type, screenshot, eval, snapshot, cookies, storage, …)
+- **Showing work** — `markdown` (live-reloading rendered panel) and `diff --last-turn` (what changed since this surface's last agent turn), both in a split the user can already see
+- **Diagnostics** — `top` / `memory` attribute CPU and RAM to a specific workspace, pane, surface, or webview, which is the first move on "cmux is pegged"
 - **tmux-compat commands** — `capture-pane`, `resize-pane`, `wait-for`, `swap-pane`, and more
 
-The skill is deliberately thin: rather than mirroring cmux's flags into prose (which would bitrot the moment cmux ships a new release), it runs `cmux <cmd> --help` inline at invocation time. The CLI itself is the source of truth.
+The skill is deliberately thin: rather than mirroring cmux's flags into prose (which would bitrot the moment cmux ships a new release), it runs `cmux <cmd> --help` inline at invocation time. The CLI itself is the source of truth, and `cmux guide` is cmux's own agent-facing index.
+
+What the skill adds on top of `--help` is the part help text can't carry: which command to reach for, and the failure modes. A handle that fails to resolve doesn't error — it falls back to the caller, so a chained `--json` → `jq` → `--surface` pipeline with an empty handle delivers its payload into the agent's own surface. A trailing `\n` submits to a shell but not to an Ink REPL. Positional refs renumber mid-loop while UUIDs don't. Each of those is a documented trap with the evidence attached.
 
 ## Codified workflows
 
@@ -32,7 +37,7 @@ Two common multi-step patterns are baked in as decision trees rather than left f
 
 ## Auto-resolved context
 
-At skill load, the plugin inlines `cmux identify --json` so the agent sees `caller.*` (where it's running), `focused.*` (where the user is looking), and the authoritative `socket_path` before its first turn. No warm-up round-trips needed.
+At skill load, the plugin inlines `cmux identify --json --id-format both` so the agent sees `caller.*` (where it's running), `focused.*` (where the user is looking), and the authoritative `socket_path` before its first turn. No warm-up round-trips needed. The `--id-format` flag is not optional: without it `identify` returns positional refs and no UUID keys at all, so a `.caller.surface_id` lookup comes back `null` and reads like cmux has lost track of the agent.
 
 ## Installation
 

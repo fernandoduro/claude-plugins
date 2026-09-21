@@ -4,13 +4,14 @@ Teaches a Claude Code agent how to drive [cmux](https://cmux.sh) — the macOS t
 
 ## What it does
 
-Gives Claude a working model of cmux's surface area — windows, workspaces, panes, surfaces, tabs, terminal I/O, notifications, sidebar progress, the embedded browser, SSH workspaces, and tmux-compat commands — without mirroring a flag list that bitrots the moment cmux ships a new release. The skill resolves its context at load time via `cmux identify` and runs `cmux <cmd> --help` on demand. The CLI is always the source of truth.
+Gives Claude a working model of cmux's surface area — windows, workspaces, panes, surfaces, tabs, terminal I/O, the event stream, notifications, sidebar progress, the embedded browser, SSH workspaces, and tmux-compat commands — without mirroring a flag list that bitrots the moment cmux ships a new release. The skill resolves its context at load time via `cmux identify` and runs `cmux <cmd> --help` on demand. The CLI is always the source of truth.
 
 ## When to use it
 
 - You want Claude to manage cmux splits, tabs, and workspaces based on natural-language requests.
 - You want Claude to read or drive another pane/tab for you (gather context, send a command, verify output).
 - You want Claude to surface progress in the cmux sidebar while doing long work, instead of spamming your terminal.
+- You want Claude to wait for something — a build, another agent's turn — without burning a round-trip every few seconds polling for it.
 - You want Claude to drive the embedded browser (navigate, click, snapshot DOM, etc.) or manage an SSH workspace where browser traffic routes through the remote box.
 
 ## Two workflows built in
@@ -18,6 +19,10 @@ Gives Claude a working model of cmux's surface area — windows, workspaces, pan
 **Open a side-by-side surface in the current window.** When you say "open a tab next to mine" or "new terminal side-by-side," the skill uses a bundled helper (`open-side-surface.sh`) that picks the right action based on the current layout: if an adjacent pane already exists, it adds the new surface as a tab inside that pane (reusing real estate); otherwise it creates a new pane column. Works for both terminal and browser surfaces.
 
 **Find, read, and optionally drive another surface.** When you say "find the surface in my 'debug lindy' workspace that's hitting the 500 error," another bundled helper (`find-surface.sh`) locates the right surface by workspace name, title, or on-screen content — then the agent reads its screen, optionally sends commands, and verifies the result.
+
+## Waiting and verifying, without polling
+
+cmux emits a retained, replayable event stream, and the skill routes waiting through it rather than through screen-scraping loops. "Tell me when that finishes" becomes one blocking call that costs nothing while it waits. "Did that message actually get through?" becomes a measurement — the submission event carries an exact length, so a truncated or fragmented delivery is detected rather than assumed. The alternative, inferring both from what a terminal happens to be drawing, is what the reference documents as the fallback for when no event stream is available.
 
 ## Natural-language triggers
 
@@ -38,9 +43,10 @@ The skill activates on anything cmux-adjacent:
 - `scripts/open-side-surface.sh` — decide between `new-surface --pane <adjacent-UUID>` and `new-pane --direction right`, based on current layout.
 - `references/browser.md` — full embedded-browser automation reference (loaded on demand).
 - `references/ssh.md` — `cmux ssh` remote workspace reference — relay daemon, browser routing, drag-drop, reconnect semantics (loaded on demand).
-- `references/progress-loops.md` — sidebar progress-loop recipe — two-loop pattern (updater + `pgrep` exit detector), clear/notify pairing (loaded on demand).
+- `references/events.md` — the `cmux events` stream: full event catalog, payload shapes, and recipes for waiting on an agent's turn, confirming a send landed on the surface you meant, and resuming a watcher from a durable cursor (loaded on demand).
+- `references/progress-loops.md` — sidebar progress-loop recipe — when an event beats a loop, the two-loop pattern (updater + exit detector), clear/notify pairing (loaded on demand).
 
-The main `SKILL.md` stays lean by delegating the browser and SSH subsystems to their reference docs. Agents only load those when the task actually involves them.
+The main `SKILL.md` stays lean by delegating the events, browser, and SSH subsystems to their reference docs. Agents only load those when the task actually involves them.
 
 ## Requirements
 

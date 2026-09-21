@@ -1,7 +1,7 @@
 ---
 name: using-cmux-cli
-description: "Drives cmux (macOS terminal multiplexer) via the `cmux` CLI — windows, workspaces, panes, tabs, sending keystrokes and reading terminal output, embedded browser, notifications, layouts."
-when_to_use: "Use when the user mentions cmux, workspaces, panes, surfaces, tabs, or splits; asks to send keystrokes to or read output from a terminal; wants to drive cmux's embedded browser; wants to post a notification into a workspace; or runs tmux-style commands (capture-pane, wait-for, swap-pane) where cmux is the multiplexer in play."
+description: "Drives cmux (macOS terminal multiplexer) via the `cmux` CLI — windows, workspaces, panes, tabs, sending keystrokes and reading terminal output, the cmux event stream for waiting on and verifying work, embedded browser, notifications, sidebar progress, layouts."
+when_to_use: "Use when the user mentions cmux, workspaces, panes, surfaces, tabs, or splits; asks to send keystrokes to or read output from a terminal; wants to wait for a build or another agent's turn to finish, or to confirm a message actually landed; wants to drive cmux's embedded browser; wants to post a notification or sidebar progress into a workspace; or runs tmux-style commands (capture-pane, wait-for, swap-pane) where cmux is the multiplexer in play."
 argument-hint: "[surface id/title, or describe what you want to do]"
 allowed-tools:
   - "Bash(cmux *)"
@@ -20,17 +20,23 @@ This skill only applies when the user is working with **cmux specifically** — 
 
 cmux ships frequently and its flags evolve. Rather than mirroring option lists into this skill (which bitrots), **run `cmux <cmd> --help` before constructing any real invocation**. The top-level overview below is inlined live; for everything else, call `cmux <cmd> --help` on demand. That single rule replaces a dozen "remember to pass --foo" footnotes.
 
+cmux also ships **its own agent-facing guide** — `cmux guide` (alias `cmux --skill`), and `cmux cloud guide` for cloud machines. It is written by cmux for models, it tracks the installed build, and it is the right first read when a task touches a subsystem this skill treats in one line. This skill covers what the guide doesn't: the traps, the failure modes, and the judgement calls about *which* command to reach for.
+
+Two migrations are in flight in the CLI, so prefer the canonical forms below over the legacy verbs — see [Canonical nouns](#canonical-nouns-workspace-and-surface).
+
 ## Current environment (resolved at skill load)
 
 ```!
-cmux identify --json 2>/dev/null || echo '{"error":"cmux identify failed — see Troubleshooting"}'
+cmux identify --json --id-format both 2>/dev/null || echo '{"error":"cmux identify failed — see Troubleshooting"}'
 ```
 
 `identify` returns three things:
 
-- `caller.*` — your own surface/workspace/window/pane refs (where the agent is running). Use these as defaults when the user says "here" / "this pane".
-- `focused.*` — where the **user** is currently looking. Often *different* from `caller`. When the user says "do that in the other tab I'm looking at", target `focused` explicitly.
+- `caller.*` — your own surface/workspace/window/pane (where the agent is running). Use these as defaults when the user says "here" / "this pane".
+- `focused.*` — where the **user** is currently looking. Often *different* from `caller`, and `null` when cmux isn't the frontmost app. When the user says "do that in the other tab I'm looking at", target `focused` explicitly.
 - `socket_path` — the actual socket the CLI is talking to.
+
+**`cmux identify --json` alone gives you refs, not UUIDs.** The default payload carries `surface_ref` / `workspace_ref` / `pane_ref` / `window_ref` and no `*_id` keys at all, so a `jq -r '.caller.surface_id'` against it returns `null` — which reads exactly like "cmux doesn't know where I am" and sends you chasing the wrong problem. Pass `--id-format uuids` (swaps refs for `*_id`) or `--id-format both` (keeps both), as the block above does. Same flag, same reason, on `tree`.
 
 If `identify` fails, you're either outside cmux or the socket is unreachable — see Troubleshooting. When outside cmux, every targeted command needs explicit handles; discover them with `cmux tree --all --json`.
 
@@ -50,10 +56,11 @@ cmux --help
 
 This is the master index. Every subcommand appears here with its full signature — enough to construct most invocations on sight. For anything non-obvious, drill in with `cmux <cmd> --help`.
 
-Capabilities of the *running* build (what flags the current app actually supports):
+`cmux capabilities` reports what the *running* app supports — an `access_mode`, ~50 capability tokens, and the full RPC method list. It is ~12KB, so run it on demand rather than reading it here, and run it specifically when you are about to depend on a **gated** behavior: `terminal.render_grid.screen_anchor.v1` (scroll-immune grid reads), `events.v1` (the event stream), `todo.v1`, `workspace.groups.v1`. Fail closed to the ungated behavior when a token is absent.
 
-```!
-cmux capabilities
+```bash
+cmux capabilities | jq -r '.capabilities[]' | grep screen_anchor   # gate a feature on its token
+cmux capabilities | jq -r '.methods[]'      | grep '^terminal'     # is there an RPC for this?
 ```
 
 ## Handle conventions (read before passing IDs)
@@ -69,8 +76,35 @@ cmux accepts three handle formats anywhere a `window`, `workspace`, `pane`, or `
 `tab-action` additionally accepts `tab:<n>` (also positional).
 
 **Get UUIDs like this:**
-- Your own location: `cmux identify --json` returns your caller/focused UUIDs. The `CMUX_*_ID` env vars (`CMUX_SURFACE_ID`, `CMUX_WORKSPACE_ID`, `CMUX_TAB_ID`) are UUIDs too, but they are a **snapshot from the moment your process was spawned** — a surface that has since been moved, re-registered, or superseded leaves them naming something cmux no longer knows, and an agent-spawned surface (a dialed-in callee) is the common case. `identify` can also answer `"caller": null` for exactly that reason, and then it reports the **focused** context, which is somebody else's surface. So confirm the id you intend to act on appears in `cmux tree --all --json --id-format uuids` before you target it, and treat "not in the tree" as unknown location rather than as a usable handle.
+- Your own location: `cmux identify --json --id-format both` returns your caller/focused UUIDs (without that flag you get refs only — see above). The `CMUX_*_ID` env vars (`CMUX_SURFACE_ID`, `CMUX_WORKSPACE_ID`, `CMUX_TAB_ID`) are UUIDs too, but they are a **snapshot from the moment your process was spawned** — a surface that has since been moved, re-registered, or superseded leaves them naming something cmux no longer knows, and an agent-spawned surface (a dialed-in callee) is the common case. `identify` can also answer `"caller": null` for exactly that reason, and then it reports the **focused** context, which is somebody else's surface. So confirm the id you intend to act on appears in `cmux tree --all --json --id-format uuids` before you target it, and treat "not in the tree" as unknown location rather than as a usable handle.
 - Anything else: `cmux tree --all --json --id-format uuids` (or `--id-format both` to see refs alongside for a human). Snapshot once, read the UUIDs you need, then target by those.
+
+### An empty or unresolved handle silently targets *you*
+
+**`cmux send --surface "" …` does not fail.** The empty value falls through to the `$CMUX_SURFACE_ID` default, so the payload is delivered to **the caller's own surface** — and when the caller is an agent inside a Claude Code REPL, the text lands in **the user's input box**. Exit code 0, no warning.
+
+This is the failure mode of the standard chaining idiom, because both halves fail quietly:
+
+```bash
+OUT=$("$SKILL_DIR/scripts/open-side-surface.sh" --wait-ready --title "…" --json)   # exit 1, empty stdout
+SID=$(jq -r '.surface_id' <<<"$OUT")                                               # "" (or the string "null")
+cmux send --surface "$SID" "npm run dev\n"                                         # → lands in YOUR surface
+```
+
+**Real failure this prevents:** exactly the sequence above, live. A helper exited non-zero with empty output, and the next `send` typed a probe command into the user's prompt box mid-conversation. The only evidence was a `surface.input_sent` event whose `payload.result.surface_id` was the caller's own.
+
+Guard both ends — validate before, verify after:
+
+```bash
+[[ -n "$SID" && "$SID" != "null" ]] || { echo "no surface handle — refusing to send" >&2; exit 2; }
+[[ "$SID" != "$MY_SURFACE_ID" ]]    || { echo "handle resolved to my own surface" >&2; exit 2; }
+```
+
+`jq -r` prints the literal string `null` for a missing key, so a `-n` test alone passes on it. Check for both. Then confirm where it actually landed with `surface.input_sent` — its `payload.result.surface_id` is the surface cmux really resolved, and `payload.params.text_length` is the exact byte count it delivered ([references/events.md](references/events.md)).
+
+In a shell script, don't hand-roll the check a fourth time: `cmux_handle_ok <what> <handle>` in `plugins/hotline/scripts/repl-state.sh` is the guard this repo already uses for it.
+
+**Which surface it substitutes depends on the path.** `cmux send` and the other CLI verbs default their `--surface`/`--workspace` to the `$CMUX_*_ID` env vars, so an empty handle lands on **the caller's own surface**. A malformed `cmux rpc` call — camelCase param keys, which are silently dropped — instead resolves against the **focused** surface and returns `ok:true` carrying somebody else's grid. Either way the call succeeds and the target is not the one you named, which is why the verification is `result.surface_id`, not the exit code.
 
 ### Destructive and bulk operations: resolve UUIDs up front
 
@@ -80,12 +114,42 @@ For anything that mutates or removes state — `close-surface`, `close-workspace
 2. `cmux tree --all --json --id-format uuids` → collect the target UUIDs.
 3. Exclude your own UUID from step 1.
 4. Act on each **by UUID**.
+5. **Verify by UUID, not by the ref cmux echoes back.** `close-surface` reports an `OK surface:<n>` whose number can already reflect post-close renumbering — a close of `surface:24` printed `OK surface:26`. That is not a sign it closed the wrong thing; it is the same positional-ref instability, showing up in the confirmation. Re-read `tree --json --id-format uuids` and assert the target UUID is gone and yours is still there.
 
 Because UUIDs are permanent, acting on one never changes what the others refer to — so a close-loop stays aimed at exactly the objects you chose. (Positional refs renumber as each object closes, so a ref captured before the loop can point somewhere new mid-loop — including your own pane. UUIDs are immune to that.)
 
-### `--json` is per-command, not global
+### `--json` works, in either position
 
-The official API docs list `--json` under "CLI options" as if it were global. In the installed build it isn't: `cmux tree --all --json` and `cmux identify --json` return structured JSON; `cmux list-workspaces --json` silently ignores the flag and prints text. When you need JSON, prefer `tree` (hierarchy) or `identify` (current context) and filter with `jq`. Run `<cmd> --json` as a quick sniff test — if the output looks like text, it's not supported there.
+`--json` is supported both as a trailing flag and as a **global prefix** — `cmux --json top --all` appears in cmux's own help, and `cmux list-workspaces --json` returns JSON. Verified on cmux 0.64.25.
+
+Still true: coverage is per-command, not universal. `<cmd> --json` is a cheap sniff test — if the output comes back as text, that command doesn't implement it, and `tree` (hierarchy) or `identify` (current context) is the fallback. `cmux tree --all --json --id-format uuids` remains the one call that answers "what exists right now, by UUID".
+
+## Canonical nouns: `workspace` and `surface`
+
+cmux is migrating from one top-level verb per action to **nouns with subcommands**. The legacy verbs keep working indefinitely and print a one-time deprecation hint **to stderr** (silence with `CMUX_QUIET=1`), so nothing breaks — but write the canonical form.
+
+| Legacy verb | Canonical |
+|---|---|
+| `list-workspaces` | `cmux workspace list` |
+| `new-workspace` | `cmux workspace create` (same flags) |
+| `close-workspace` | `cmux workspace close <ws>` |
+| `rename-workspace` | `cmux workspace rename <ws> --title <new>` |
+| `select-workspace` | `cmux workspace select <ws>` |
+
+`cmux workspace` also carries verbs with no legacy equivalent, worth knowing they exist:
+
+- `workspace env [ws] [--mask]` — the workspace's configured environment variables; `--mask` redacts the values, which is what you use when the output is going anywhere the user might paste it.
+- `workspace reconnect [ws]` / `workspace disconnect [ws]` — reconnect or drop a remote (SSH) workspace, **including one whose automatic reconnect gave up because the host was unreachable**. This is the answer to a dead `cmux ssh` workspace; see [references/ssh.md](references/ssh.md).
+- `workspace status [set <lane|auto>]`, `workspace loading <on|off>`, `workspace group <…>`.
+
+`cmux surface` is the other noun, and the skill's older `surface resume` is only one corner of it:
+
+- `surface ls [<machine>|local] [--refresh]` — the **resource catalog**. Terminals, VNC displays and browsers on this Mac and on every cloud machine are addressed as `<machine>/<kind>/<key>`; panes merely project them.
+- `surface open <resource> [--pane <p>] [--left|--right|--up|--down|--tab] [--new]` — project a resource into a pane. It **reuses the pane already showing that resource** unless `--new`, which makes it the cheap way to bring an existing thing into view rather than spawning a duplicate.
+- `surface new-terminal --machine <id|local> [--cwd <dir>] [--name <name>]` — create a terminal on a machine.
+- `surface resume <set|show|get|clear>` — attach restart-command metadata to a terminal surface.
+
+There is **no** `window`, `pane`, or `tab` noun yet — those error. Keep using `list-windows`, `new-pane`, `tab-action`, etc.
 
 ## Environment variables
 
@@ -94,20 +158,48 @@ cmux auto-populates these in every terminal it spawns:
 - `CMUX_WORKSPACE_ID` — default `--workspace` for **every** command
 - `CMUX_SURFACE_ID` — default `--surface`
 - `CMUX_TAB_ID` — default `--tab` for `tab-action`
-- `CMUX_SOCKET_PATH` — override the socket location (default: `~/Library/Application Support/cmux/cmux.sock`; the official docs also mention `/tmp/cmux.sock` on some builds — trust whatever `cmux identify` reports)
+- `CMUX_SOCKET_PATH` — override the socket location. **Trust `cmux identify`'s `socket_path` over any written-down default**, including this one: the CLI defaults to `~/.local/state/cmux/cmux.sock` and auto-discovers tagged/debug sockets, while `~/Library/Application Support/cmux/cmux.sock` and `/tmp/cmux.sock` both appear in circulation as the answer.
 - `CMUX_SOCKET_PASSWORD` — socket auth; `--password` flag > this env var > Settings-stored password
 - `CMUX_SOCKET_ENABLE` — force-enable or disable the socket entirely (`1`/`0`/`true`/`false`/`on`/`off`)
+- `CMUX_QUIET` — set to `1` to silence the one-time deprecation notices the legacy verbs print (see [Canonical nouns](#canonical-nouns-workspace-and-surface)). Those notices go to **stderr**, so they never corrupt a pipe into `jq`; this is for log noise, not correctness.
 - `CMUX_SOCKET_MODE` — access mode: `cmuxOnly` (default; only cmux-spawned processes connect), `allowAll` (any local process), or `off`. Also accepts `cmux-only` / `allow-all`. If you're invoking cmux from a process that wasn't spawned by cmux (CI, non-cmux shell, foreign wrapper) and getting connection refused, `CMUX_SOCKET_MODE=allowAll` is the usual fix — but understand the implication: any local process gains control of cmux.
 
 ---
 
 ## Reference material (load on demand)
 
-Two subsystems live in separate files to keep this skill lean. Read them only when a task actually involves them:
+Subsystems live in separate files to keep this skill lean. Read them only when a task actually involves them:
 
+- [references/events.md](references/events.md) — **`cmux events`**, the retained NDJSON event stream. Read it before writing any wait, poll, or readiness loop, and before deciding whether a message you sent actually landed. It is the authoritative answer to both, and it replaces screen-scraping guesswork.
 - [references/browser.md](references/browser.md) — embedded browser automation (navigate, click, type, snapshot/screenshot, cookies, storage, eval, waits, locators).
 - [references/ssh.md](references/ssh.md) — `cmux ssh` remote workspaces (browser traffic routing, drag-drop upload, remote agents, reconnect, daemon troubleshooting).
 - [references/layouts.md](references/layouts.md) — the `cmux layout` geometry API (the split-tree JSON, save/get/open/delete, and rebuilding a whole workspace with `new-workspace --layout`). Read it whenever you need split orientation, divider ratios, nesting, or exact layout reproduction — `tree` cannot give you any of those.
+
+---
+
+## Waiting, and knowing whether something happened: use `cmux events`
+
+**Before you write a `read-screen` loop, a `pgrep` poll, or a scheduled wake-up, check whether an event answers the question.** `cmux events` streams newline-delimited JSON for surfaces opening and closing, prompts being submitted, agent turns starting and ending, notifications and sidebar writes — and the buffer is **retained and replayable**, so it answers about the past too.
+
+```bash
+# Blocking, zero wake-ups: wait up to 10 minutes for that agent's turn to end.
+cmux events --category agent --name agent.hook.Stop \
+            --timeout 600 --no-ack --no-heartbeat 2>/dev/null \
+  | jq -c --arg s "$SURF_ID" \
+      'select(.payload.phase=="completed" and .surface_id==$s)' | head -1
+```
+
+Three questions events answer by fact, where the screen answers only by inference:
+
+| Question | Event | Why it beats the screen |
+|---|---|---|
+| Did my message submit into that REPL? | `workspace.prompt.submitted` | Carries an **exact** `message_length` plus a 240-char `message_preview`, so a length mismatch *measures* the silent-byte-loss failure and a frame count measures fragmentation. |
+| Is that agent done? | `agent.hook.Stop` / `SubagentStop` / `SessionEnd` | A real turn boundary, not a spinner's elapsed-time parenthetical. |
+| Does the new surface exist yet? | `surface.created` | Reports the `surface_id` and `pane_id` outright. (Existing ≠ PTY attached — the [readiness probe](#default-principle-make-new-work-visible-to-the-user) is still required.) |
+
+Exit code is `0` on a match and `1` on `--timeout`, with the timeout message on stderr. Scripted use is always `--no-ack --no-heartbeat 2>/dev/null` — the ack frame has no `.name` and will break a naive `jq` filter.
+
+The full catalog (32 event names), the payload shapes, the `agent.hook.*` double-fire, and the verification recipes are in **[references/events.md](references/events.md)**. Read it before building anything that waits.
 
 ---
 
@@ -298,7 +390,7 @@ cmux send --help
 
 Escape sequences matter: `\n` and `\r` send Enter; `\t` sends Tab. **Against a shell**, if a command should actually execute, append `\n` — otherwise you're just typing into the prompt. **Against a live TUI/Ink REPL (`claude`) the `\n` does not submit at all** — see [a trailing `\n` does not submit into a TUI/Ink REPL](#gotcha-a-trailing-n-does-not-submit-into-a-tuiink-repl) below before sending into one. And because that interpretation runs on your argument regardless of target, a payload whose *content* carries the two characters `\n`, `\r`, or `\t` is rewritten in transit — see [cmux rewrites a literal backslash-n in your payload](#gotcha-cmux-rewrites-a-literal-backslash-n-in-your-payload).
 
-**Always `read-screen` after `send` to confirm execution started — not just that the send succeeded.** `cmux send` returns success when bytes are delivered to the PTY; it has no opinion about whether the remote shell did anything with them. Concrete failure mode: if you `send` into a freshly-created surface before its shell has finished initializing, the trailing `\n` gets swallowed by the shell's startup output and the command sits at the prompt unexecuted. Exit code 0, nothing happened. (That is a *shell-startup* race, fixed by waiting for the PTY. A live TUI REPL produces the identical "exit 0, nothing happened" symptom from a different cause that waiting will never fix — see the [gotcha below](#gotcha-a-trailing-n-does-not-submit-into-a-tuiink-repl).) The only way to know is to read the screen back and look for evidence the command ran (output, new prompt line, process spinning). See the [default recipe](#default-principle-make-new-work-visible-to-the-user) for the wait-for-PTY pattern, and Troubleshooting for the `Terminal surface not found` variant. **Caveat:** the read-back only proves anything if it reflects the *live* bottom, so take it with `--scrollback --lines <n>` — a bare `read-screen` follows the user's scroll and hands you a stale capture (see [read-screen returns the scrolled viewport](#gotcha-read-screen-returns-the-scrolled-viewport-not-the-live-bottom) before concluding nothing happened).
+**Always verify after `send` that execution started — not just that the send succeeded.** `cmux send` returns success when bytes are delivered to the PTY; it has no opinion about whether the remote shell did anything with them. Against an **agent REPL**, `workspace.prompt.submitted` is the authoritative check and also measures what arrived ([references/events.md](references/events.md)); against a **shell**, `read-screen` is the check, because a shell command produces no event. Concrete failure mode: if you `send` into a freshly-created surface before its shell has finished initializing, the trailing `\n` gets swallowed by the shell's startup output and the command sits at the prompt unexecuted. Exit code 0, nothing happened. (That is a *shell-startup* race, fixed by waiting for the PTY. A live TUI REPL produces the identical "exit 0, nothing happened" symptom from a different cause that waiting will never fix — see the [gotcha below](#gotcha-a-trailing-n-does-not-submit-into-a-tuiink-repl).) The only way to know is to read the screen back and look for evidence the command ran (output, new prompt line, process spinning). See the [default recipe](#default-principle-make-new-work-visible-to-the-user) for the wait-for-PTY pattern, and Troubleshooting for the `Terminal surface not found` variant. **Caveat:** the read-back only proves anything if it reflects the *live* bottom, so take it with `--scrollback --lines <n>` — a bare `read-screen` follows the user's scroll and hands you a stale capture (see [read-screen returns the scrolled viewport](#gotcha-read-screen-returns-the-scrolled-viewport-not-the-live-bottom) before concluding nothing happened).
 
 #### Gotcha: a trailing `\n` does not submit into a TUI/Ink REPL
 
@@ -322,7 +414,18 @@ cmux send-key --surface "$SID" Enter     # a real key event, outside the paste �
 
 **A missing user event is not proof of non-submission either.** Text sent into a REPL that is mid-turn is *enqueued*, not dropped, and claude 2.1.221 then delivers it one of two ways: injected into the running turn at its next tool boundary as an `attachment` with `.attachment.type == "queued_command"` — in which case **no user record is ever written, even though the model reads and answers it** — or flushed as a genuine user record after that turn ends. So the transcript can show nothing for a message that already got an answer.
 
-**How to check** — `read-screen` after the send, before concluding anything:
+**How to check** — ask the event stream first; it answers directly, where the screen only hints:
+
+```bash
+SEQ=$(cmux events --snapshot 2>/dev/null | jq -r '.resume.latest_seq')   # BEFORE the send
+cmux send --surface "$SID" "$MSG"
+cmux events --after "$SEQ" --name workspace.prompt.submitted \
+            --limit 3 --timeout 10 --no-ack --no-heartbeat 2>/dev/null | jq -c .
+```
+
+Take the `--snapshot` seq *before* you send — it is what scopes the replay to your own submission instead of returning someone else's.
+
+A frame means it submitted. Nothing within the timeout means it did not, and `send-key Enter` is the fix. Fall back to `read-screen` when events are unavailable (you are outside cmux, or the build predates the stream):
 
 ```bash
 cmux send --surface "$SID" "$MSG"
@@ -336,7 +439,22 @@ Text in the box **plus a quiet REPL** (no live spinner, no `Press up to edit que
 - **Fragmentation.** A single text-then-Enter send has arrived as 3–7 separately submitted turns in real traffic. It is not predictable: 12 controlled sends from 507 B to 16 KB, including 66-line multi-line payloads, fragmented **zero** times.
 - **Silent byte loss.** One of those same 12 sends lost 2,538 contiguous bytes out of the middle of a 3,045 B payload — one user event, no error, the bytes provably absent from the whole transcript. A separate ~16 KB single-line send lost 3,066 bytes.
 
-The trigger is unknown and the rate is unbounded by the data we have. `send` exiting 0 means bytes reached the PTY and nothing more, so put a nonce in anything that matters and confirm the nonce landed in the target's transcript or on its screen before acting as though it did.
+The trigger is unknown and the rate is unbounded by the data we have. `send` exiting 0 means bytes reached the PTY and nothing more, so **verify anything that matters**.
+
+**`workspace.prompt.submitted` is the check.** It fires per submission with an exact `message_length`, so one frame whose length matches what you sent is a clean submit; a short length is the byte-loss case; several frames are the fragmentation case; no frame is a non-submit. That turns both failure modes from "warned about" into "measured":
+
+```bash
+MSG="…"; LEN=${#MSG}
+SEQ=$(cmux events --snapshot 2>/dev/null | jq -r '.resume.latest_seq')
+cmux send --workspace "$WS" --surface "$SID" "$MSG"; sleep 0.2
+cmux send-key --workspace "$WS" --surface "$SID" Enter
+cmux events --after "$SEQ" --name workspace.prompt.submitted \
+            --limit 5 --timeout 15 --no-ack --no-heartbeat 2>/dev/null \
+  | jq -c --arg ws "$WS" --argjson len "$LEN" \
+      'select(.workspace_id==$ws) | {got:.payload.message_length, want:$len}'
+```
+
+Full recipe and traps: [references/events.md](references/events.md). Keep the nonce as a second belt when the payload is consequential — it is the only check that also survives outside cmux, where no event stream exists.
 
 #### Gotcha: cmux rewrites a literal backslash-n in your payload
 
@@ -384,6 +502,7 @@ That is the only path that gets a Ctrl-C into the REPL at all. (The quirk is spe
 
 Two things that make those judgements possible off `read-screen`:
 
+- **`agent.hook.*` settles it without reading the screen at all.** A `Stop`/`SubagentStop` frame (`payload.phase == "completed"`) for that `surface_id` is a real turn boundary, and `PreToolUse` frames arriving means a turn is live. Prefer that over any screen heuristic; the two screen signals below are the fallback for a build or context without the event stream.
 - **Busy needs two signals**, because neither holds alone: "esc to interrupt" is absent in claude 2.1.221, and the spinner's wording changes between releases — but a *running* spinner always carries a live elapsed-time parenthetical (`✶ Dilly-dallying… (5s · ↓ 124 tokens · …)`) where a finished one does not (`✻ Baked for 12s`). Corroborate with screen-byte-identity across a short window (~0.6 s) when the cost is justified. Bias both signals toward "busy" — a needless fallback beats a destroyed turn.
 - **Reading the input box** has a precise discriminator: the box pads its `❯` with a NO-BREAK SPACE (U+00A0), while the transcript echoes of earlier user turns above it use a plain space. Fall back to "last `❯` line wins" on versions that don't. An untouched REPL's greyed placeholder (`Try "how does …"`) renders *inside an empty box* and `read-screen` strips the colour, so match it by shape and treat it as empty.
 
@@ -398,12 +517,10 @@ cmux new-split --help
 ### List / create workspaces, inspect the tree
 
 ```!
-cmux list-workspaces --help
+cmux workspace --help
 ```
 
-```!
-cmux new-workspace --help
-```
+`workspace create` takes the same flags the legacy `new-workspace` did — `--name`, `--description`, `--cwd`, `--command`, `--layout`, `--group`, `--focus` — so `cmux workspace create --help` is the one to read when building a call.
 
 ```!
 cmux tree --help
@@ -437,6 +554,14 @@ The tree shape, surface fields (`type`/`cwd`/`focus`/`url`/`command`), the tree�
 ```!
 cmux tab-action --help
 ```
+
+### Wait for something to happen
+
+```!
+cmux events --help
+```
+
+Recipes and the event catalog: [references/events.md](references/events.md).
 
 ### Notifications
 
@@ -619,7 +744,13 @@ Vocabulary for less-frequent commands — just enough so you know what exists. S
 - **Notification mgmt**: `list-notifications`, `clear-notifications`
 - **Embedded browser**: full subsystem in [references/browser.md](references/browser.md). Master index: `cmux browser --help`. Default to `browser snapshot` over `screenshot` unless producing a PNG for a human.
 - **tmux-compat**: `capture-pane`, `resize-pane`, `wait-for`, `swap-pane`, `break-pane` / `join-pane`, `next-window` / `previous-window` / `last-window` / `last-pane`, `find-window`, `clear-history`, `set-buffer` / `list-buffers` / `paste-buffer`, `display-message`, `set-hook` / `bind-key` / `unbind-key` / `copy-mode`, `respawn-pane`, `pipe-pane`
-- **Misc**: `markdown [open] <path>`, `refresh-surfaces`, `reload-config`, `surface-health`, `trigger-flash`, `claude-hook <session-start|stop|notification>`
+- **Show the user something**: `markdown [open] <path>` (rendered markdown panel, live-reloads on disk change), `diff [--unstaged|--staged|--branch|--last-turn]` (renders a diff in a browser split; `--last-turn` is *changes since this surface's last agent-turn baseline*, i.e. a one-call "here's what I just did"), `set-buffer`/`paste-buffer`
+- **Diagnose a hot or stuck cmux**: `top [--all] [--processes] [--sort cpu|mem|proc] [--format tsv]` attributes CPU/RAM to window/workspace/pane/surface/webview; `memory [--groups <n>]` separates the app's own footprint from recursive child-process RSS. This is the first move on "cmux is pegged" / "which pane is spinning", not `ps`.
+- **Agent session history**: `vault sessions`, `vault search <query>` (supports `agent:`, `repo:`, `ws:`, `before:`/`after:` operators), `vault checkpoints`, `vault checkpoint --name`, `vault fork (--checkpoint|--turn) [--open]` — an index over past agent sessions, with checkpoint/fork. Overlaps the `graveyard` CLI and the `session-tools` skills; reach for whichever the user names.
+- **Agent hooks**: `hooks setup [--agent <name>]`, `hooks <agent> install|uninstall` — cmux's integrations for 17 agents (codex, opencode, pi, gemini, cursor, amp, …). Claude Code's hooks are injected automatically by cmux's claude wrapper, so there is nothing to install for claude. `claude-hook <session-start|active|stop|idle|notification|prompt-submit>` still exists as the internal entrypoint.
+- **Misc**: `refresh-surfaces`, `reload-config` (reloads **both** Ghostty config and `~/.config/cmux/cmux.json`, refreshing terminals in place — no app restart), `surface-health`, `trigger-flash`, `restore`/`fork` (session checkpoints), `sessions list`, `comments list`, `automation <list|show|test|enable|disable|logs|reload>`, `themes`, `right-sidebar`/`sidebar`, `feed tui|clear`, `sudo run` (Touch ID-gated privileged command), `remotes`, `popup`, `move-tab-to-new-workspace`, `reorder-workspaces`, `local-tmux`/`tmux attach`, `mosh`/`mosh-tmux`/`ssh-tmux`
+- **Cloud machines**: `cmux vm` (alias `cmux cloud`) runs remote devboxes, and `cmux agent --agent <claude|codex|opencode|pi>` starts a detached coding agent on one. Large subsystem with its own live guide — read **`cmux cloud guide`** rather than guessing; nothing about it is mirrored here.
+- **The user's checklist — do not touch it**: `cmux todo <add|list|check|uncheck|start|edit|rm|clear|set|open>` is the per-workspace sidebar checklist, and cmux's own help is explicit that **it belongs to the user**: don't add, edit, complete, remove or replace items on your own initiative, only when the user explicitly asks. Use your own task tracking for your plans. `cmux todo list` to read it is fine.
 - **RPC escape hatch**: `cmux rpc <method> [json-params]` when no first-class subcommand exists. Skips the typed validation wrapped subcommands get — last resort.
 
 ---
@@ -648,7 +779,15 @@ When the user describes an action informally, map it to cmux vocabulary:
 | remote host work (SSH workspace, drag-drop to remote, running agents on remote box, browser hitting remote `localhost`) | see [references/ssh.md](references/ssh.md) | `cmux ssh <host>` creates the workspace; reference covers the whole subsystem |
 | "list everything" (workspaces/panes/surfaces) | `cmux tree --all` | one call, full hierarchy — but flat, no split geometry |
 | "save this layout" / "how is this workspace split?" / "recreate this layout in /foo" | `cmux layout save <name>` / `cmux layout get <name>` / `cmux layout open <name> --cwd /foo` | `layout` is the only API with split direction, divider ratio, and nesting. See [references/layouts.md](references/layouts.md). |
-| "open a workspace laid out like X with these commands running" | `cmux new-workspace --layout '<split-tree json>'` | rebuilds the whole split tree and seeds each surface's `command` in one call |
+| "open a workspace laid out like X with these commands running" | `cmux workspace create --layout '<split-tree json>'` | rebuilds the whole split tree and seeds each surface's `command` in one call |
+| "tell me when that agent / build is done" / "wait for X then …" | `cmux events --name agent.hook.Stop --timeout <s>` | One blocking call, no polling and no scheduled wake-ups. See [references/events.md](references/events.md). |
+| "did that message actually go through?" | `cmux events --name workspace.prompt.submitted` | Exact `message_length` + preview — measures loss and fragmentation instead of guessing from the input box. |
+| "show me what you changed" / "show me the diff" | `cmux diff --last-turn` (or `--unstaged` / `--staged` / `--branch`) | Renders in a browser split. `--last-turn` = since this surface's last agent-turn baseline. |
+| "show me this plan / doc" | `cmux markdown open <path>` | Formatted panel, live-reloads as the file changes — better than pasting it into chat. |
+| "cmux is slow" / "what's pegging my CPU?" | `cmux top --all --sort cpu` / `cmux memory` | Attributes usage to a specific surface/pane/webview. Don't reach for `ps`. |
+| "find that session where we did X" | `cmux vault search "<query>"` | Indexed past agent sessions; `agent:` / `repo:` / `ws:` / `before:` / `after:` operators. |
+| "my ssh workspace went dead" / "reconnect it" | `cmux workspace reconnect [<ws>]` | Works even after automatic reconnect gave up on an unreachable host. |
+| "add that to my todo list" | `cmux todo add "…"` | **Only** on an explicit request — the checklist is the user's. Never write to it on your own initiative. |
 
 ## Post-mutation verification
 
@@ -670,7 +809,10 @@ If commands fail, work through these in order:
 5. **Version mismatch?** `cmux version` + `cmux capabilities` — if a flag the skill surfaces isn't there, the running app is older than the CLI (or vice versa).
 6. **Unknown subcommand?** `cmux --help` lists everything the current build understands. If it's not there, the build predates it — consider `cmux rpc <method>` as a last resort. (The [official API docs](https://cmux.com/docs/api) list some commands like `list-surfaces` that don't exist on every build; trust `cmux --help` over the docs when they disagree.)
 7. **Socket disabled / wrong mode?** `CMUX_SOCKET_ENABLE=1` to force-enable; `CMUX_SOCKET_MODE=allowAll` if you're calling cmux from a process it didn't spawn (CI runner, foreign wrapper). Default mode is `cmuxOnly`, which rejects non-cmux ancestry.
-8. **`Terminal surface not found` (or `Failed to read terminal text`) on a surface that exists?** Mostly historical — `open-side-surface.sh --wait-ready` handles this internally. If you hit it from a different code path: `read-screen` errors while `cmux tree` clearly shows the surface exists. The surface is real — its PTY backend just isn't attached yet, and the error wording says "doesn't exist" when it means "not attached." Common on surfaces created less than ~1 second ago.
+8. **A command printed a deprecation notice?** `list-workspaces`, `new-workspace`, `close-workspace`, `rename-workspace` and `select-workspace` are now aliases that hint at `cmux workspace <verb>` ([Canonical nouns](#canonical-nouns-workspace-and-surface)). The notice goes to **stderr** and the legacy form keeps working, so it never breaks a pipe — write the canonical form, or set `CMUX_QUIET=1` for a noisy script.
+9. **`jq` choking on `cmux events` output?** Two non-event lines share those streams: the subscription **ack** frame on stdout (suppress with `--no-ack`, plus `--no-heartbeat`) and `Error: Timed out waiting for a matching event` on stderr with exit 1 (keep stderr out of the pipe with `2>/dev/null`). Neither means the stream is broken.
+10. **`cmux identify --json` gave you `null` for an id?** The default payload has refs only. Pass `--id-format uuids` or `--id-format both` before concluding cmux has lost track of your surface.
+11. **`Terminal surface not found` (or `Failed to read terminal text`) on a surface that exists?** Mostly historical — `open-side-surface.sh --wait-ready` handles this internally. If you hit it from a different code path: `read-screen` errors while `cmux tree` clearly shows the surface exists. The surface is real — its PTY backend just isn't attached yet, and the error wording says "doesn't exist" when it means "not attached." Common on surfaces created less than ~1 second ago.
 
    **A `cmux send` is what attaches the PTY** — lazily, on the first send. So waiting for `read-screen` to start working will not, on its own, get you there on a `--focus false` surface: verified on cmux 0.64.22, a surface created `--focus false` answered `Error: internal_error: Failed to read terminal text` indefinitely before its first send and read fine straight after one. Send the probe, then read.
 

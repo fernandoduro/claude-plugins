@@ -87,6 +87,16 @@ cmux omo
 
 On connection drop, cmux reconnects with exponential backoff (3s, 6s, 12s, up to 60s). The remote session persists and cmux reattaches on reconnect, resizing to smallest-screen-wins. Default keepalives (`ServerAliveInterval=20`, `ServerAliveCountMax=2`) are injected unless `~/.ssh/config` already sets them.
 
+**When the automatic reconnect gives up** — the host stayed unreachable long enough that cmux stopped retrying — the workspace is not dead, it is paused. Resume it explicitly:
+
+```bash
+cmux workspace reconnect                      # the caller's workspace
+cmux workspace reconnect --workspace <ws>     # a specific one
+cmux workspace disconnect --workspace <ws>    # deliberately drop the connection
+```
+
+This is the right move on a remote workspace whose pane looks frozen, and it is cheaper than closing the workspace and re-running `cmux ssh` (which loses the tab, its title, and its layout). Both accept a positional handle as well as `--workspace`.
+
 ## Natural-language quick reference
 
 | User says | cmux command |
@@ -97,10 +107,13 @@ On connection drop, cmux reconnects with exponential backoff (3s, 6s, 12s, up to
 | "connect on port 2222" | `cmux ssh user@host --port 2222` |
 | "skip host key prompt" | `cmux ssh user@host --ssh-option StrictHostKeyChecking=no` |
 | "create the workspace but don't focus it" | `cmux ssh user@host --no-focus` |
+| "my remote workspace went dead" / "reconnect it" | `cmux workspace reconnect [--workspace <ws>]` |
+| "drop the connection but keep the tab" | `cmux workspace disconnect [--workspace <ws>]` |
 
 ## Troubleshooting
 
 - **Remote daemon fails to upload** — check `cmux remote-daemon-status`. Permissions on `~/.cmux/bin/` on the remote, or restrictive shell init that errors on unknown commands, are the usual causes. The status output gives you the `gh release download` commands to verify the binary manually.
 - **Browser in remote workspace can't reach `localhost`** — verify you opened the browser pane *inside* the remote workspace (the one created by `cmux ssh`), not in your local workspace.
 - **Reconnect loop** — if the backoff hits 60s and keeps failing, check `~/.ssh/config` for conflicting keepalive settings, and verify the remote host's `sshd` actually accepts the keepalives cmux injects.
+- **Reconnect gave up entirely** — `cmux workspace reconnect` restarts it in place; see [Resilient reconnect](#resilient-reconnect). Don't close and re-`ssh`.
 - **Shell init noise on the remote** — if the remote's `.bashrc` / `.zshrc` prints errors or requires interactivity, daemon upload can fail silently. Quieting init output for non-interactive sessions typically fixes it.

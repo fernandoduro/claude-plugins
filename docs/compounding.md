@@ -117,14 +117,18 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   screen confirm the parked payload for another two days. Every fixture in a suite
   sharing one precondition (a baseline that already carries the marker, say) is the
   tell that a direction is missing. (claude-plugins-xick round 2 #1, -y4rl)
-- **cmux resolves a missing or unparseable target to the FOCUSED surface, so hard-fail
-  on an empty handle and echo-verify every RPC target.** Three separate incidents in
-  one day: `cmux send --surface ""` typed into a bystander's live REPL twice, and a
-  `terminal.replay` with camelCase param keys returned `ok:true` carrying the focused
-  surface's grid. Refuse the call yourself before cmux can substitute a target
-  (`cmux_handle_ok` in `plugins/hotline/scripts/repl-state.sh`), send snake_case
-  params only, and compare `result.surface_id` against what you asked for — a wrong
-  answer arrives as a successful one. (claude-plugins-r465.7, -r465.9)
+- **cmux substitutes a target for a missing or unparseable one instead of failing, so
+  hard-fail on an empty handle and echo-verify every RPC target.** Which target it
+  substitutes depends on the path, and both readings are live: a CLI verb falls back to
+  the `$CMUX_*_ID` env vars, so `cmux send --surface ""` types into **the caller's own
+  surface** — four incidents, three into a bystander's live REPL and one into the
+  operator's input box mid-conversation — while a malformed `cmux rpc` (camelCase param
+  keys, silently dropped) resolves against the **focused** surface and returns `ok:true`
+  carrying its grid. Refuse the call yourself before cmux can substitute anything
+  (`cmux_handle_ok` in `plugins/hotline/scripts/repl-state.sh`), send snake_case params
+  only, and compare the echoed `result.surface_id` against what you asked for — a wrong
+  answer arrives as a successful one, and `surface.input_sent` carries that field for
+  every `send`. (claude-plugins-r465.7, -r465.9, -99nu)
 - **Pin the container on every cmux pane/surface call, and address the target by
   UUID.** `cmux` resolves a target *inside* a workspace context that defaults to the
   caller's inherited `$CMUX_WORKSPACE_ID`, and that scoping binds a UUID exactly as it

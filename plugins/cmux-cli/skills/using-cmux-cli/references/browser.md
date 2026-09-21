@@ -31,6 +31,10 @@ Grouped for navigation (run `cmux browser <subcommand> --help` for flags):
 - **State**: `cookies <get|set|clear>`, `storage <local|session> <get|set|clear>`, `state <save|load> <path>`
 - **Page plumbing**: `frame`, `dialog`, `download`, `tab <new|list|switch|close|<index>>`, `highlight`
 - **Streams**: `console <list|clear>`, `errors <list|clear>`
+- **Devtools & inspection**: `devtools toggle|console`, `react-grab toggle [--return-to <terminal-surface>]`, `highlight <selector>`
+- **View & appearance**: `zoom in|out|reset|<factor>` (a bare factor is absolute — `0.8` = 80%), `focus-mode enter|exit|toggle`, `design-mode enable|disable|toggle|status`, `focus-webview`, `is-webview-focused`
+- **Profiles & data**: `profiles <list|add|rename|clear|delete>` (`profiles clear <profile|--all> [--force]`), `import`, `history clear --force`
+- **Subsystem toggle**: `disable`, `enable`, `status` (also `cmux disable-browser` / `enable-browser` / `browser-status` at top level)
 
 ## Addressing a browser surface
 
@@ -41,7 +45,17 @@ cmux browser --surface <surface-id> <subcommand> ...
 cmux browser <surface-id> <subcommand> ...
 ```
 
-`open` / `open-split` / `new` / `identify` work without an explicit surface — they create or introspect one.
+`open` / `open-split` / `new` / `identify` work without an explicit surface — they create or introspect one. They default `--focus` to **false** (so they don't steal the user's focus) and default the workspace to `$CMUX_WORKSPACE_ID`.
+
+Most subcommands accept their argument either as a flag or as a bare positional — `browser click --selector 'button'` and `browser click 'button'` are the same call, as are `--script`/`--text`/`--key`/`--value` and their positional forms.
+
+### Profiles isolate browsing state
+
+`open` / `open-split` / `new` take `--profile <name|uuid>`, and `browser profiles <list|add|rename|clear|delete>` manages them. Reach for a named profile whenever a task needs its own cookies and storage — a second logged-in user, an auth flow you don't want writing into the default profile, or a clean slate per test. `profiles clear` wipes a profile's data; `history clear --force` clears only the default profile's history (it mirrors the View menu).
+
+### Inspecting a React app
+
+`browser react-grab toggle` turns on cmux's React element picker; `--return-to <terminal-surface>` sends what gets picked back to a terminal surface, which is how you get a component identity into an agent's hands without a screenshot. `browser devtools toggle` (or `devtools console`) opens the web inspector. `design-mode enable` makes the page directly editable in place — useful for showing a user a copy or layout change before you write the code, but remember it mutates only the live DOM.
 
 ## Key patterns
 
@@ -82,6 +96,11 @@ Most mutating subcommands — `click`, `type`, `fill`, `navigate`, `press`, `sel
 | "wait until the dashboard loads" | `cmux browser wait --selector '#dashboard' --timeout-ms 10000` |
 | "type into the email field" | `cmux browser fill --selector 'input[name=email]' me@example.com --snapshot-after` |
 | "what did the console log?" | `cmux browser console list` |
+| "open the devtools" | `cmux browser devtools toggle` |
+| "which React component is that?" | `cmux browser react-grab toggle --return-to <terminal-surface>` |
+| "zoom the page out to 80%" | `cmux browser zoom 0.8` |
+| "log in as a second user" / "clean browser state" | `cmux browser open <url> --profile <name>` |
+| "save/restore the logged-in session" | `cmux browser state save <path>` / `state load <path>` |
 
 ## Browser in an SSH workspace
 
