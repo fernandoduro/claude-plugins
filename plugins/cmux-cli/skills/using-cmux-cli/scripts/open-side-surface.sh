@@ -377,12 +377,31 @@ done
 # guard this skill prescribes escapes it, and a JSON contract must not depend on
 # every consumer remembering a guard.
 #
-# So: refuse. The surface EXISTS at this point and is not closed here, because
-# there is nothing safe to close it BY — a positional ref names whatever occupies
-# that slot when the close runs, which is why the caller's reap path refuses one
-# too (cmux-call-async.sh). The diagnostic therefore names the ref for a human and
-# deliberately does NOT print a `surface_id=` line, so no reaper matches a
-# non-existent UUID.
+# So: refuse.
+#
+# THE TRADEOFF, ACCEPTED DELIBERATELY. This is not a no-op for callers: hotline
+# guards on `surface_ref`, not `surface_id` (`cmux-call-async.sh`, and
+# `SURF_HANDLE="${SURF_ID:-$SURF_REF}"` below it), so it SURVIVED the old
+# ref-degrade — a dial whose surface was healthy, titled and ready completed on the
+# ref alone. Refusing therefore converts a limping-but-working dial into a hard
+# failure, and that is the cost.
+#
+# It is worth paying because of the one cause a retry cannot fix. If the lookup
+# failed because the echoed ref RENUMBERED — a `surface.moved` in the window
+# between cmux minting the ref and this snapshot is exactly that
+# (references/events.md) — then the ref no longer names the surface we created, and
+# proceeding on it is how a work order gets pasted into a BYSTANDER'S live REPL.
+# A failed dial is recoverable in one command; that is not recoverable at all.
+#
+# AND IT DELIBERATELY LEAVES AN ORPHAN. The surface exists and is not closed here,
+# because there is nothing safe to close it BY: `cmux close-surface` needs a handle,
+# and the only handle we have is the positional ref that may already name a
+# different slot — closing on it would reap whatever occupies that slot now, which
+# is the same reasoning that makes the caller's reap path refuse a ref
+# (cmux-call-async.sh). A leaked surface a human can see and close is strictly
+# better than a close that lands on a live tab. The diagnostic names the ref for
+# that human and deliberately does NOT print a `surface_id=` line, so no reaper
+# matches a UUID that was never resolved.
 #
 # Exit 4, distinct from 1 (create/parse), 2 (no panes / identify) and 3 (readiness
 # or an empty handle), so a caller can tell "cmux would not name what it just made"

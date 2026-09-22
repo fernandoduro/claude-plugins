@@ -162,8 +162,14 @@ SKILL.md, which is what actually covers a long payload.
 
 `agent.hook.UserPromptSubmit` corroborates per-surface with `session_id`,
 `surface_id` and `cwd`, but **do not length-check against it** — its
-`tool_input_length` counts claude's wrapping (56 where `message_length` was 43),
-not your payload.
+`tool_input_length` is useless for length in BOTH directions: it counts claude's
+wrapping on a short input (56 where `message_length` was 43) and it is bounded on a
+long one. Measured over 26 frames on 0.64.25 it never exceeded 270, and an
+**18,635-byte** payload delivered whole reported **253** — so it is not the
+uncapped alternative to `message_length` it looks like. Count FRAMES with it (it is
+the only submit event carrying `session_id` and `surface_id`, so it is the only one
+that can say whose submit it was) and leave byte-verification to a nonce in the
+callee's transcript.
 
 ## Recipe: did my `send` reach the surface I meant?
 

@@ -91,6 +91,25 @@ SID=$(jq -r '.surface_id' <<<"$OUT")                                            
 cmux send --surface "$SID" "npm run dev\n"                                         # → lands in YOUR surface
 ```
 
+**Check the opener's exit status, not just its id.** It refuses rather than handing
+back a null id, so the shape a caller has to handle is *no JSON and a non-zero
+exit* — and a caller that only tests the parsed id never notices, because an empty
+`$OUT` parses to an empty `$SID` exactly like a null one:
+
+```bash
+OUT=$("$SKILL_DIR/scripts/open-side-surface.sh" --wait-ready --title "…" --json) || {
+  echo "side surface refused (rc=$?) — see its stderr; a surface may have been left behind" >&2
+  exit 2
+}
+SID=$(jq -r '.surface_id // empty' <<<"$OUT")
+[[ -n "$SID" && "$SID" != "null" ]] || { echo "no surface handle — refusing to send" >&2; exit 2; }
+```
+
+An `rc 4` specifically means the surface was created but cmux never resolved it to
+a UUID; the surface is **not** closed (nothing safe to close it by) and the
+diagnostic names its positional ref so you can find it in
+`cmux tree --all --json --id-format both`.
+
 **Real failure this prevents:** exactly the sequence above, live. A helper exited non-zero with empty output, and the next `send` typed a probe command into the user's prompt box mid-conversation. The only evidence was a `surface.input_sent` event whose `payload.result.surface_id` was the caller's own.
 
 Guard both ends — validate before, verify after:
