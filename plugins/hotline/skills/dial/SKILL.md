@@ -16,15 +16,14 @@ status it returns.
 
 ## Arguments
 
-- **`$0`** (optional): Where to dial — a dirmap ID, path, or fuzzy name. A
-  **session ID is not a fourth form of the same thing**: it resolves that session's
-  *workspace*, so it names a directory and the callee that lands there has never
-  seen the conversation. Reaching the conversation is `--resume`, below.
+- **`$0`** (optional): Where to dial — a dirmap ID, path, fuzzy name, or a
+  **session ID**, which dials that *conversation*: the callee resumes it, forked by
+  default. To reach only the repo a session lives in, pass the workspace.
 - **`$1+`** (optional): The task/question for the remote workspace.
-- **`--resume <session-id>`**: boot the callee with that session's **conversation**,
-  not just its directory. Required whenever the message is about what that session
-  said, did, or decided — "what went wrong?", "summarize your last turn". Forks by
-  default, so hotline protocol noise stays out of the original transcript; `--no-fork`
+- **`--resume <session-id>`**: continue a conversation that is not the target —
+  a session in one repo while the callee is dialed into another. A session ID passed
+  as the target already implies this, so you rarely need the flag. Forks by default,
+  so hotline protocol noise stays out of the original transcript; `--no-fork`
   contributes to it instead. → `--resume <session-id>` `[--no-fork]`
 - **`--headless`**: force the headless transport (`claude -p`) for this dial even when cmux is up. Debugging the headless path, A/B-ing transports, or wanting `claude -p`'s structured output. Costs programmatic-usage credit; the cmux default doesn't. → `--headless`
 - **`--detached`** / **`--new-workspace`**: spawn the callee in a disconnected new workspace tab instead of a side-by-side surface. The tab auto-closes once the response is captured, so nothing is left to watch or clean up. → `--placement detached`
@@ -36,8 +35,8 @@ status it returns.
 ```
 /hotline:hotline-dial dotfiles what branch are you on?
 /hotline:hotline-dial coaching write the about page
-/hotline:hotline-dial --resume 5b1dda91-... what went wrong?   # that session's context
-/hotline:hotline-dial 5b1dda91-... run the test suite          # only its workspace
+/hotline:hotline-dial 5b1dda91-... what went wrong?            # resumes that conversation
+/hotline:hotline-dial my-repo run the test suite               # a fresh callee in the repo
 /hotline:hotline-dial --headless dotfiles what branch are you on?
 /hotline:hotline-dial --detached dotfiles run the full test suite
 /hotline:hotline-dial --window lindris backend tests, please
@@ -119,7 +118,7 @@ Exactly one JSON object on stdout, always. Read `.status`:
 
 | `.status` | exit | What it means | What you do |
 |---|---|---|---|
-| `connected` | 0 | The callee is up. `.remote_session_id`, `.workspace`, `.transport`, `.call_dir`, `.surface_ref`, `.first_contact`, `.fallbacks` describe the call. On a follow-up into a live surface, `.confirmed` and `.retried_enter` describe how the delivery landed. | Report the connection to the user, then wait for the response (below) — unless `.awaiting_response` is `false`. |
+| `connected` | 0 | The callee is up. `.remote_session_id`, `.workspace`, `.transport`, `.call_dir`, `.surface_ref`, `.first_contact`, `.fallbacks` describe the call. On a follow-up into a live surface, `.confirmed`, `.retried_enter` and `.submit_frames` describe how the delivery landed. | Report the connection to the user, then wait for the response (below) — unless `.awaiting_response` is `false`. |
 | `replay` | 2 | Identity needed a second pass. `.fingerprint` is now in the transcript. | Run **the identical command again**. Nothing else. Don't explain it to the user. |
 | `needs_disambiguation` | 3 | The reference matched several workspaces; `.candidates` has them. | Ask the user which one, then re-run with `--target <their chosen path>`. |
 | `error` | 1 | `.stage` (`args`/`identity`/`resolve`/`transport`/`fire`/`boot`/`deliver`), `.detail` (real stderr), `.recovery` (one-line hint). | Surface `.detail` and `.recovery` to the user, and leave the retry to them. |
@@ -142,6 +141,14 @@ of the callee's JSONL and is definitive; `screen` inferred it from the rendered
 viewport. `.retried_enter: true` means the paste's own submit key was dropped and one
 corrective Enter submitted it — the delivery is good, but a run of them is worth
 reporting.
+
+`.submit_frames` counts the turns the payload landed as. **Above one means the callee
+received the work order split across several turns** — still delivered, and
+`.confirmed` says so, but the callee read it in pieces, which is worth reporting and
+never a reason to re-dial (that would run the order twice). It is a floor rather than
+a tally: a queued paste is counted when the queue flushes, so 1 is not itself proof of
+a single clean turn. The field is absent, rather than 0, wherever the count could not
+be taken: a cmux with no event stream, a herdr callee, or a first contact.
 
 `transport` means the backend the caller asked for is not usable here — herdr is not
 installed, or no herdr server answered. **It is never a degradation**: an explicit
@@ -334,21 +341,21 @@ what the user said, confirm before relaying anything:
 
 Skip the confirmation only when the match is plainly correct ("blog" → `my-blog`).
 
-**A session ID in `--target` reaches the directory, not the conversation.** The
-resolver reverse-looks-up the UUID to the workspace its transcript lives in and
-stops there, so the callee boots in the right repo with a blank slate. When the
-user hands you a session ID and the message is *about that conversation* — "what
-went wrong?", "summarize your last turn", "why did you take that approach?" —
-pass `--resume <session-id>` as well, or you will relay an answer invented by a
-brain that was never in the room. **Nothing in the payload flags this**: `.status`
-is `connected`, `.workspace` is correct, `.fallbacks` is empty, and the reply reads
-plausibly. A session ID plus work that needs only the *repo* ("run the suite
-there") is the one shape that wants no `--resume`.
+**A session ID dials the conversation.** Pass it through as the target and the
+callee resumes that session, so a message about what it said, did or decided —
+"what went wrong?", "summarize your last turn", "why did you take that approach?"
+— reaches a callee that was actually in the room. When the user hands you a
+session ID but the work needs only the *repo* ("run the suite there"), pass the
+workspace instead; the session ID is not the way to ask for a blank slate.
 
-**Then fork or assist.** `--resume` **forks** by default, so hotline protocol
-noise doesn't land in their transcript. If the user's intent is clearly to *help
-that session* ("continue that conversation", "help it fix its bug"), add
+**Then fork or assist.** Continuing a session **forks** it by default, so hotline
+protocol noise doesn't land in their transcript. If the user's intent is clearly
+to *help that session* ("continue that conversation", "help it fix its bug"), add
 `--no-fork` to contribute to it directly. When in doubt, fork.
+
+`--fresh` contradicts a session-ID target and is refused: one says continue that
+conversation, the other says ignore what exists. Pass the workspace with `--fresh`
+to start new there.
 
 **Fresh phase, fresh session.** A re-dial to the same target silently resumes
 the cached session. When the next dispatch must NOT inherit the previous one's

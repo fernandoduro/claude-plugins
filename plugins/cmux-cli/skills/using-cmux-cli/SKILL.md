@@ -91,6 +91,25 @@ SID=$(jq -r '.surface_id' <<<"$OUT")                                            
 cmux send --surface "$SID" "npm run dev\n"                                         # → lands in YOUR surface
 ```
 
+**Check the opener's exit status, not just its id.** It refuses rather than handing
+back a null id, so the shape a caller has to handle is *no JSON and a non-zero
+exit* — and a caller that only tests the parsed id never notices, because an empty
+`$OUT` parses to an empty `$SID` exactly like a null one:
+
+```bash
+OUT=$("$SKILL_DIR/scripts/open-side-surface.sh" --wait-ready --title "…" --json) || {
+  echo "side surface refused (rc=$?) — see its stderr; a surface may have been left behind" >&2
+  exit 2
+}
+SID=$(jq -r '.surface_id // empty' <<<"$OUT")
+[[ -n "$SID" && "$SID" != "null" ]] || { echo "no surface handle — refusing to send" >&2; exit 2; }
+```
+
+An `rc 4` specifically means the surface was created but cmux never resolved it to
+a UUID; the surface is **not** closed (nothing safe to close it by) and the
+diagnostic names its positional ref so you can find it in
+`cmux tree --all --json --id-format both`.
+
 **Real failure this prevents:** exactly the sequence above, live. A helper exited non-zero with empty output, and the next `send` typed a probe command into the user's prompt box mid-conversation. The only evidence was a `surface.input_sent` event whose `payload.result.surface_id` was the caller's own.
 
 Guard both ends — validate before, verify after:
@@ -103,6 +122,8 @@ Guard both ends — validate before, verify after:
 `jq -r` prints the literal string `null` for a missing key, so a `-n` test alone passes on it. Check for both. Then confirm where it actually landed with `surface.input_sent` — its `payload.result.surface_id` is the surface cmux really resolved, and `payload.params.text_length` is the exact byte count it delivered ([references/events.md](references/events.md)).
 
 In a shell script, don't hand-roll the check a fourth time: `cmux_handle_ok <what> <handle>` in `plugins/hotline/scripts/repl-state.sh` is the guard this repo already uses for it.
+
+`open-side-surface.sh` will not hand you a null id at all: it retries the ref→UUID lookup (a fresh surface is not instantly enumerable) and, if it still cannot name what it created, exits **4** with a diagnostic and no JSON rather than reporting nulls as success. Keep the guard above anyway — `identify` and a hand-rolled tree read can each still answer `null`.
 
 **Which surface it substitutes depends on the path.** `cmux send` and the other CLI verbs default their `--surface`/`--workspace` to the `$CMUX_*_ID` env vars, so an empty handle lands on **the caller's own surface**. A malformed `cmux rpc` call — camelCase param keys, which are silently dropped — instead resolves against the **focused** surface and returns `ok:true` carrying somebody else's grid. Either way the call succeeds and the target is not the one you named, which is why the verification is `result.surface_id`, not the exit code.
 

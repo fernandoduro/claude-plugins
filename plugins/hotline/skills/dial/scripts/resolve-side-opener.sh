@@ -38,19 +38,38 @@ fi
 
 # Try a single search root: return the highest-version open-side-surface.sh under
 # it, tolerating an optional version dir between the plugin name and skills/.
-# Patterns are ordered most- to least-specific; within a pattern, sort -V picks
-# the newest version when several are cached side by side.
+# Patterns are ordered most- to least-specific; within one pattern the NEWEST
+# cached version wins.
+#
+# THE PATTERNS ARE PASSED AS STRINGS AND EXPANDED INSIDE, which is the whole
+# mechanism: a `for pat in <globs>` list is expanded by the shell before the loop
+# body ever runs, so every match arrives as its own iteration in plain glob order
+# and a sort inside the body has a single item to sort. That is how this resolved
+# the OLDEST cached opener while promising the newest — and the oldest is the one
+# most likely to predate whatever the caller now depends on.
+newest_match() {  # <glob-pattern-as-string> → matches, newest version first
+  local pat="$1"
+  local -a m=()
+  # Unquoted on purpose: this is where the glob is meant to expand, and nullglob
+  # (set above) turns a miss into an empty array rather than the literal pattern.
+  # This file is bash by shebang AND by every call site, so the word-splitting
+  # this relies on is real here.
+  # shellcheck disable=SC2206
+  m=( $pat )
+  (( ${#m[@]} )) || return 0
+  printf '%s\n' "${m[@]}" | sort -Vr
+}
+
 try_root() {
-  local root="$1" cand matches
+  local root="$1" cand pat
   for pat in \
     "$root/cmux-cli/skills/using-cmux-cli/scripts/open-side-surface.sh" \
-    "$root"/cmux-cli/*/skills/using-cmux-cli/scripts/open-side-surface.sh \
-    "$root"/*/skills/using-cmux-cli/scripts/open-side-surface.sh \
-    "$root"/*/*/skills/using-cmux-cli/scripts/open-side-surface.sh; do
-    matches=$(printf '%s\n' $pat 2>/dev/null | sort -V)
+    "$root/cmux-cli/*/skills/using-cmux-cli/scripts/open-side-surface.sh" \
+    "$root/*/skills/using-cmux-cli/scripts/open-side-surface.sh" \
+    "$root/*/*/skills/using-cmux-cli/scripts/open-side-surface.sh"; do
     while IFS= read -r cand; do
       [[ -n "$cand" && -f "$cand" ]] && { printf '%s\n' "$cand"; return 0; }
-    done <<< "$matches"
+    done < <(newest_match "$pat")
   done
   return 1
 }

@@ -18,7 +18,7 @@
 #   • Focus theft                    → creation verbs pass --focus false, readiness
 #                                       calls no focus-pane, and every send/read is
 #                                       refused on an empty handle (cmux would
-#                                       resolve it to the FOCUSED surface).
+#                                       fall back to $CMUX_*_ID and hit THIS pane).
 #   • User-scrolled panes            → every read carries --scrollback, so a frozen
 #                                       viewport cannot read as "not ready yet".
 #   • cmuxOnly Broken pipe          → cmux-call-async.sh runs NO detached poller
@@ -144,7 +144,8 @@ fi
 rm -rf "$tmp"
 
 # Case R1c: an empty target — or none at all — is a usage error, never a default.
-# `cmux send --surface ""` does not fail; it delivers to the FOCUSED surface, which
+# `cmux send --surface ""` does not fail; it falls back to $CMUX_SURFACE_ID and
+# delivers to the CALLER'S OWN surface, which
 # on 2026-08-26 put probe keystrokes into an unrelated live claude session twice
 # (claude-plugins-r465.7).
 tmp=$(mktemp -d "$TMP_ROOT"/hotline-ready-XXXXXX); mkdir -p "$tmp/bin"

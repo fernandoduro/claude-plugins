@@ -29,10 +29,13 @@ Verified on cmux 0.64.25:
 | `--name` / `--category` | Filtered **server-side**, repeatable. |
 | `--after <seq>` | Replays retained frames after that seq. `--after 0` replays everything retained. |
 | `--cursor-file <path>` | Reads the start seq from the file, then writes the last seen seq back to it after each frame. |
-| `--snapshot` | Prints the subscription ack and exits — use it to read `oldest_seq` / `latest_seq`. |
+| `--snapshot` | Prints the subscription ack and exits — use it to read `oldest_seq` / `latest_seq`. **Never combine with `--no-ack`**: the ack is the entire output, so the pair yields nothing and exits 0. |
 
-**Scripted use is always `--no-ack --no-heartbeat` with stderr kept out of the
-pipe**, or `jq` chokes on the ack frame and on the timeout line:
+**Scripted FRAME READS are always `--no-ack --no-heartbeat` with stderr kept out
+of the pipe**, or `jq` chokes on the ack frame and on the timeout line.
+**`--snapshot` is the exception**: it prints the ack and nothing else, so adding
+`--no-ack` suppresses the only line it emits and returns empty output with exit
+0 — a silent nothing, not an error.
 
 ```bash
 cmux events --name surface.created --limit 1 --timeout 30 \
@@ -41,19 +44,48 @@ cmux events --name surface.created --limit 1 --timeout 30 \
 
 ## The catalog
 
+**A replay window does not reach the newest frames, so never use one to ask "did
+X just happen".** `--after <seq> --limit <n>` returns frames from that seq
+forward and stops well short of `latest_seq`: three consecutive queries
+(`--after 0`, `--after 17000`, `--after latest-1200`) all reported no trace of a
+session that a 25-second LIVE watch then showed emitting on every turn. Windowed
+absence is not even evidence of recent absence. To ask about the present, watch
+the live stream or resume from `--cursor-file`; use `--after` only to read a
+range you have already bounded.
+
 Harvested live from replays on cmux 0.64.25. **The retained buffer is a rolling window**, so no single replay contains every name — `surface.input_sent` and `agent.hook.Notification` appear in one replay and are gone from the next taken minutes later. Treat a name's absence from a replay as "nothing did that recently", never as "this event does not exist". cmux may also add names; re-harvest with
 `cmux events --after 0 --no-ack --no-heartbeat --limit 900 --timeout 10 2>/dev/null | jq -r '[.category,.name]|@tsv' | sort -u`.
 
 | category | names |
 |---|---|
 | `agent` | `agent.hook.SessionStart`, `agent.hook.UserPromptSubmit`, `agent.hook.PreToolUse`, `agent.hook.Stop`, `agent.hook.SubagentStop`, `agent.hook.SessionEnd`, `agent.hook.Notification`, `agent.notification.decision`, `agent.journal.unattributed` |
-| `surface` | `surface.created`, `surface.selected`, `surface.focused`, `surface.closed`, `surface.input_sent`, `surface.key_sent` |
+| `surface` | `surface.created`, `surface.selected`, `surface.focused`, `surface.closed`, `surface.moved`, `surface.input_sent`, `surface.key_sent` |
 | `workspace` | `workspace.created`, `workspace.selected`, `workspace.closed`, `workspace.reordered`, `workspace.prompt.submitted` |
 | `pane` | `pane.created`, `pane.focused` |
 | `window` | `window.created`, `window.keyed`, `window.unkeyed` |
 | `notification` | `notification.created`, `notification.read`, `notification.cleared`, `notification.clear_requested`, `notification.removed` |
 | `feed` | `feed.item.received`, `feed.item.completed` |
 | `sidebar` | `sidebar.metadata.updated` |
+
+### Observed, shape not yet captured
+
+<!-- tripwire: claude-plugins-6r0d — capture a real frame for each of these, then move them into the table above and delete this section. Do not guess a shape. -->
+
+`agent.hook.AskUserQuestion` and `surface.action` are real — the catalog guard saw
+both on cmux 0.64.25 — and their payloads are **not** documented here, because the
+rolling buffer had dropped them before either could be read. They are listed so the
+catalog is honest about the event surface, not because anything is known about their
+contents. Do not guess a shape for them; capture one the next time either appears:
+
+```bash
+cmux events --name agent.hook.AskUserQuestion --name surface.action \
+            --after 0 --no-ack --no-heartbeat --limit 900 --timeout 10 2>/dev/null | jq
+```
+
+`agent.hook.AskUserQuestion` is presumably the hook pair for Claude Code's
+question tool, and so presumably carries the same `phase` double-fire and
+`session_id` / `cwd` fields as every other `agent.hook.*` — presumably, which is
+exactly why it is in this section and not in the table above.
 
 ## Frame shape and how to target one surface
 
@@ -74,19 +106,21 @@ Three traps, all verified:
 - **`agent.hook.*` fires twice per occurrence** — once with
   `payload.phase == "received"`, once with `"completed"`. Deduplicate with
   `select(.payload.phase == "completed")` or you will count every turn twice.
-- **`surface_id` can be `null`** on some `agent.hook.*` frames (the hook arrived
-  without attribution). A `select(.surface_id == $s)` filter silently drops
-  those, so fall back to `payload.workspace_id` or `payload.cwd` when a surface
-  match comes up empty.
+- **`surface_id` is `null` on a large share of `agent.hook.*` frames**, not an
+  occasional few — in one 900-frame replay, on most `agent.hook.Stop`s. So a
+  `select(.surface_id == $s)` filter drops the majority of them, and "fall back
+  to matching null too" over-corrects: it makes *any* session's frame match, which
+  answers "something happened" and never "my agent did". Discriminate on
+  `payload.cwd` or `payload.session_id` instead — real frames carry both.
 - **Sensitive text is redacted.** Frames list what was withheld in
   `payload.redacted_fields`, and hand you a length and a preview instead — which
   is exactly what the verification recipes below need.
 
 ## Recipe: did my message actually submit?
 
-This replaces the input-box forensics in SKILL.md. `workspace.prompt.submitted`
-fires when a prompt is submitted into an agent REPL and carries an **exact**
-`message_length` plus a 240-character `message_preview`:
+`workspace.prompt.submitted` fires when a prompt is submitted into an agent REPL
+and carries a `message_preview` capped at 240 characters, plus a
+`message_length` that is **the length of that preview, not of the message**:
 
 ```json
 {"name":"workspace.prompt.submitted","seq":647,
@@ -95,39 +129,67 @@ fires when a prompt is submitted into an agent REPL and carries an **exact**
             "redacted_fields":["message"],"workspace_id":"4C7FA894-…"}}
 ```
 
-`message_length` was confirmed character-exact against the submitted text. That
-makes the two confirmed `cmux send` failure modes **measurable** rather than
-merely warned about:
+<!-- tripwire: claude-plugins-8ur4 — cmux#13687; if that is fixed, this cap and the at-least-240 reading go away. -->
 
-- **Silent byte loss** → `message_length` is smaller than what you sent.
-- **Fragmentation** → several `workspace.prompt.submitted` frames for one send.
+**`message_length` IS CAPPED AT 240 AND CANNOT VERIFY A LONGER PAYLOAD.** It
+equals the preview's own length in every frame, and no frame reports more than
+240. Measured on cmux 0.64.25 over a 900-frame replay: 21 submissions, all 21
+with `message_length == (message_preview | length)`, 14 of them at exactly 240,
+none above it, and those 14 were 6 distinct messages whose previews end
+mid-token. A shorter value is exact; 240 means "240 or more".
+
+An earlier reading of this field as character-exact came from checking it against
+two plaintexts of 119 and 43 characters — both under the cap, so both agreed.
+
+What that leaves:
+
+- **Fragmentation is measurable** → several `workspace.prompt.submitted` frames
+  for one send, and a count needs no length at all.
+- **Silent byte loss is measurable only under 240 characters.** For anything
+  longer, a whole payload and a truncated one both report 240, so use a nonce or
+  a transcript read instead.
 
 ```bash
 MSG="…"; LEN=${#MSG}
-SEQ=$(cmux events --snapshot 2>/dev/null | jq -r '.resume.latest_seq')
+# NO --no-ack here: --snapshot prints only the ack, so the pair returns nothing.
+SEQ=$(cmux events --snapshot --no-heartbeat 2>/dev/null | jq -r '.resume.latest_seq')
 
 cmux send     --workspace "$WS" --surface "$SID" "$MSG"
 sleep 0.2
 cmux send-key --workspace "$WS" --surface "$SID" Enter
 
-# Every submission since the send, for that workspace.
+# Every submission since the send, for that workspace. `verdict` is deliberately
+# three-valued: an equality test would call every payload over 240 chars short.
 cmux events --after "$SEQ" --name workspace.prompt.submitted \
             --limit 5 --timeout 15 --no-ack --no-heartbeat 2>/dev/null \
   | jq -c --arg ws "$WS" --argjson len "$LEN" \
       'select(.workspace_id==$ws)
        | {seq, got:.payload.message_length, want:$len,
-          ok:(.payload.message_length==$len)}'
+          verdict: (if .payload.message_length >= 240 then "capped-unknown"
+                    elif .payload.message_length == $len then "exact"
+                    else "short" end)}'
 ```
+
+Count the lines this prints: more than one is fragmentation regardless of any
+length. `capped-unknown` on a long payload is the expected answer, not a
+failure — verify those with a nonce.
 
 No frame within the timeout means **nothing submitted** — the text is sitting in
 the input box, and `send-key Enter` is the fix (never a re-`send`, which appends).
-One frame with a matching length is a clean submit. Anything else is the lossy
-path, and the nonce-and-verify discipline in SKILL.md still applies.
+One frame is a clean submit; several are fragmentation. Treat a length of 240 as
+"unknown, at least 240" and fall back to the nonce-and-verify discipline in
+SKILL.md, which is what actually covers a long payload.
 
 `agent.hook.UserPromptSubmit` corroborates per-surface with `session_id`,
 `surface_id` and `cwd`, but **do not length-check against it** — its
-`tool_input_length` counts claude's wrapping (56 where `message_length` was 43),
-not your payload.
+`tool_input_length` is useless for length in BOTH directions: it counts claude's
+wrapping on a short input (56 where `message_length` was 43) and it is bounded on a
+long one. Measured over 26 frames on 0.64.25 it never exceeded 270, and an
+**18,635-byte** payload delivered whole reported **253** — so it is not the
+uncapped alternative to `message_length` it looks like. Count FRAMES with it (it is
+the only submit event carrying `session_id` and `surface_id`, so it is the only one
+that can say whose submit it was) and leave byte-verification to a nonce in the
+callee's transcript.
 
 ## Recipe: did my `send` reach the surface I meant?
 
@@ -184,6 +246,32 @@ So a full submit into a REPL leaves three frames — `surface.input_sent` for th
 actually accepts it. Missing the third with the first two present is precisely the
 "delivered but never submitted" case.
 
+### `surface.moved` is how a positional ref stops meaning what it meant
+
+A surface moving between panes is what renumbers the `surface:N` / `pane:N` slots
+every other snapshot was read against, so this frame is the observable behind
+"refs renumber between the snapshot and the call". It carries the same two-sided
+shape as the send frames — `params` is what the caller passed, `result` is what
+cmux resolved:
+
+```json
+{"name":"surface.moved","seq":18364,"source":"socket.v2",
+ "surface_id":"4089FEEB-…","pane_id":"7FDF0314-…","workspace_id":"F6D3065C-…",
+ "payload":{"method":"surface.move",
+            "params":{"index":0,"pane_id":"pane:26","surface_id":"surface:61",
+                      "workspace_id":"workspace:12"},
+            "result":{"pane_id":"7FDF0314-…","pane_ref":"pane:26",
+                      "surface_id":"4089FEEB-…","surface_ref":"surface:61",
+                      "window_id":"AD03B5BA-…","window_ref":"window:2",
+                      "workspace_id":"F6D3065C-…","workspace_ref":"workspace:12"}}}
+```
+
+The surface's `pane_id` and `workspace_id` are what change, so a handle cached as
+`surface:61` may now sit in a different pane and workspace — which matters because
+`cmux` scopes pane and surface calls *inside* a workspace context. Re-resolve a
+cached ref against a fresh tree after one of these, and prefer the UUID, which a
+move does not change.
+
 ### Trap: an empty or unresolved handle silently targets *you*
 
 `cmux send --surface "" …` does not fail. The empty value falls through to
@@ -235,6 +323,20 @@ trusting `--limit 1`.
 `agent.hook.SessionStart` is the counterpart for "has the agent come up yet?" —
 its payload carries `session_id`, `surface_id` and `cwd`, which is also how you
 map a live claude session id onto the cmux surface showing it.
+
+**`payload.session_id` is not a bare uuid.** It is a composite feed id,
+`cmux-feed-v1:<base64 agent name>:<base64 session uuid>` — e.g.
+`cmux-feed-v1:Y2xhdWRl:ZDFkNzIyYjkt…` for claude session
+`d1d722b9-d8c1-42ef-987e-468ce2662c73`. So an equality test against a uuid never
+matches, and passing the raw value on hands your caller something no transcript
+path or registry can use. A uuid is 36 bytes, so its base64 is padding-free and
+a `contains()` test is exact; decode the last `:` segment to recover it.
+
+**`surface_id` is null on a large share of real `agent.hook.*` frames** — in the
+same replay, on many `agent.hook.Stop`s. A surface filter with a null fallback
+therefore matches *any* session's turn end, which answers "something finished"
+but never "the agent I care about finished". Discriminate on `payload.cwd` or
+`payload.session_id`, both of which real frames do carry.
 
 ## Recipe: wait for a surface to exist
 

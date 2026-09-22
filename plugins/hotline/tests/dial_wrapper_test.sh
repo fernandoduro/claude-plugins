@@ -2388,6 +2388,110 @@ check "a follow-up with no --label is refused at the args gate like any other di
 
 
 # ===========================================================================
+# N. A SESSION ID IN --target CONTINUES THAT CONVERSATION.
+# ===========================================================================
+# The id already names its workspace, so reading it as a directory handle gives
+# the caller a callee that has never seen the conversation they asked for — and
+# nothing in the payload says so (status connected, .workspace correct,
+# .fallbacks empty, and the reply reads plausibly). There is deliberately no
+# opt-out flag: "that repo, blank slate" is spelled by passing the workspace.
+#
+# The fixture is what makes the id resolvable at all: resolve-workspace.sh
+# reverse-looks-up $HOME/.claude/projects/<encoded-cwd>/<uuid>.jsonl and reads the
+# real cwd out of the transcript rather than decoding the lossy dir name, so the
+# planted transcript carries a "cwd" field pointing at this sandbox's target.
+t=$(new_env); note_leak "$t"
+make_cmux "$t/bin"; make_side_opener "$t/side.sh"
+TARGET_SESSION="5b1dda91-a3c1-45f9-b967-aa9dac221e59"
+TGT_PATH=$(cd "$t/target" && pwd -P)
+TGT_ENC=$(printf '%s' "$TGT_PATH" | sed 's|[^a-zA-Z0-9]|-|g')
+mkdir -p "$t/home/.claude/projects/$TGT_ENC"
+printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$TGT_PATH" "$TARGET_SESSION" \
+  > "$t/home/.claude/projects/$TGT_ENC/$TARGET_SESSION.jsonl"
+
+: > "$OK_REQUESTS"
+out=$(PATH="$t/bin:$PATH" HOME="$t/home" CMUX_FAKE_STATE="$t" \
+  HOTLINE_CALLER_SESSION_ID="caller-sess1" \
+  HOTLINE_OPEN_SIDE_SURFACE="$t/side.sh" HOTLINE_PENDING_DIR="$t/pending" \
+  bash "$DIAL" --target "$TARGET_SESSION" --mode work_order --label "session target" \
+    --prompt "what went wrong?" --boot-timeout 5 2>"$t/err.txt")
+rc=$?
+call_dir=$(jq -r '.call_dir // empty' <<<"$out" 2>/dev/null)
+[[ -n "$call_dir" ]] && note_leak "$call_dir"
+launch=$(launch_script_of "$call_dir")
+
+[[ "$rc" -eq 0 && "$(jq -r .status <<<"$out")" == "connected" \
+   && "$(jq -r .workspace <<<"$out")" == "$TGT_PATH" ]]
+check "a session-id target connects, into the workspace that session lives in" $? \
+  "rc=$rc out=$out stderr=$(cat "$t/err.txt")"
+
+grep -q -- "--resume $TARGET_SESSION" <<<"$launch"
+check "a session-id target RESUMES that session (no --resume flag needed)" $? \
+  "launch=$launch"
+
+# Forked by default, so hotline's protocol noise stays out of the original
+# transcript. --session-id is REQUIRED alongside a fork and forbidden on a plain
+# resume, which is why this asserts both halves.
+grep -q -- '--fork-session' <<<"$launch"
+check "…and forks it by default" $? "launch=$launch"
+grep -q -- '--session-id' <<<"$launch"
+check "…with --session-id, which a fork requires" $? "launch=$launch"
+
+# --- --fresh contradicts it, and is refused rather than resolved -------------
+# One says continue that conversation, the other says ignore what exists. Picking
+# a winner would discard something the caller typed on purpose.
+t2=$(new_env); note_leak "$t2"
+make_cmux "$t2/bin"; make_side_opener "$t2/side.sh"
+mkdir -p "$t2/home/.claude/projects/$TGT_ENC"
+printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$TGT_PATH" "$TARGET_SESSION" \
+  > "$t2/home/.claude/projects/$TGT_ENC/$TARGET_SESSION.jsonl"
+FRESH_OUT=$(PATH="$t2/bin:$PATH" HOME="$t2/home" CMUX_FAKE_STATE="$t2" \
+  HOTLINE_CALLER_SESSION_ID="caller-sess2" \
+  HOTLINE_OPEN_SIDE_SURFACE="$t2/side.sh" HOTLINE_PENDING_DIR="$t2/pending" \
+  bash "$DIAL" --target "$TARGET_SESSION" --mode work_order --label "session+fresh" \
+    --prompt "hi" --fresh --boot-timeout 5 2>/dev/null)
+[[ "$(jq -r .status <<<"$FRESH_OUT")" == "error" \
+   && "$(jq -r .stage <<<"$FRESH_OUT")" == "args" ]]
+check "a session-id target with --fresh is refused at the args gate" $? "out=$FRESH_OUT"
+# The refusal must name what the caller TYPED. Talking about --resume, a flag they
+# never passed, reads as a bug in hotline rather than a choice they can act on.
+[[ "$(jq -r .detail <<<"$FRESH_OUT")" == *"session id in --target"* ]]
+check "…naming the session-id target, not a --resume flag nobody passed" $? \
+  "detail=$(jq -r .detail <<<"$FRESH_OUT")"
+
+# --- herdr cannot adopt a session, and a session-id target is one ------------
+HERDR_OUT=$(PATH="$t2/bin:$PATH" HOME="$t2/home" CMUX_FAKE_STATE="$t2" \
+  HOTLINE_CALLER_SESSION_ID="caller-sess3" \
+  HOTLINE_OPEN_SIDE_SURFACE="$t2/side.sh" HOTLINE_PENDING_DIR="$t2/pending" \
+  bash "$DIAL" --target "$TARGET_SESSION" --mode work_order --label "session+herdr" \
+    --prompt "hi" --transport herdr --boot-timeout 5 2>/dev/null)
+[[ "$(jq -r .status <<<"$HERDR_OUT")" == "error" \
+   && "$(jq -r .stage <<<"$HERDR_OUT")" == "args" \
+   && "$(jq -r .detail <<<"$HERDR_OUT")" == *"session id in --target"* ]]
+check "a session-id target with --transport herdr is refused, naming the target" $? \
+  "out=$HERDR_OUT"
+
+# --- A WORKSPACE target is untouched by all of this --------------------------
+# The regression this guards: making the id imply a resume must not make every
+# dial imply one. Case 1 already pins "no --resume on a fresh first contact"; this
+# pins that --fresh still WORKS on a workspace target, which is the combination
+# the refusal above could have swallowed.
+t3=$(new_env); note_leak "$t3"
+make_cmux "$t3/bin"; make_side_opener "$t3/side.sh"
+WS_FRESH_OUT=$(PATH="$t3/bin:$PATH" HOME="$t3/home" CMUX_FAKE_STATE="$t3" \
+  HOTLINE_CALLER_SESSION_ID="caller-sess4" \
+  HOTLINE_OPEN_SIDE_SURFACE="$t3/side.sh" HOTLINE_PENDING_DIR="$t3/pending" \
+  bash "$DIAL" --target "$t3/target" --mode work_order --label "ws+fresh" \
+    --prompt "hi" --fresh --boot-timeout 5 2>/dev/null)
+ws_cd=$(jq -r '.call_dir // empty' <<<"$WS_FRESH_OUT" 2>/dev/null)
+[[ -n "$ws_cd" ]] && note_leak "$ws_cd"
+[[ -n "$ws_cd" ]] && note_leak "$(launch_script_of "$ws_cd" >/dev/null; true)"
+[[ "$(jq -r .status <<<"$WS_FRESH_OUT")" == "connected" ]]
+check "a workspace target with --fresh still connects (the refusal is scoped)" $? \
+  "out=$WS_FRESH_OUT"
+
+
+# ===========================================================================
 if [[ -s "$POISON_LOG" ]]; then
   fail "no test reaches the real cmux, claude, or dirmap" "$(cat "$POISON_LOG")"
 else

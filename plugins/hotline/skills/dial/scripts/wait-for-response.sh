@@ -115,6 +115,13 @@
 #     ticks either way, so lowering this collapses wall-clock WITHOUT changing
 #     how many iterations run or what they decide. Tests set it to ~0.
 #     (claude-plugins-fhn3)
+#   HOTLINE_CMUX_TURN_WAIT_SLICE — seconds one cmux turn-end gate may block for
+#     (default 30). Once the transcript has confirmed our message submitted, there
+#     is nothing left to look for but the turn ending, so the wait blocks on the
+#     event instead of re-reading the transcript every 2s. It is a SLICE, not the
+#     whole budget: a Stop that lands between the transcript read and the gate's
+#     marker is missed, and the slice is the ceiling on what that costs. 0 disables
+#     the gate and restores the plain poll.
 #   HOTLINE_PREEMPT_GRACE — how long (default 180, in the same integer POLL_INTERVAL
 #     tick accounting as --timeout) to keep polling after the callee's session shows
 #     a preempting prompt, before giving up with exit 3. A human who interrupts to
@@ -939,6 +946,41 @@ if $CMUX_MODE; then
     # timeout message can say submit was never confirmed without asserting why.
     SUBMIT_UNCONFIRMED=false
     FILE_GRACE=10   # transcript appears ~instantly for a live session; else fall back
+    # --- The when-to-read gate. -------------------------------------------
+    # This loop's 2s tick is doing two different jobs, and only one of them needs
+    # a tick at all. BEFORE submit is confirmed it is the fast-fail: the submit
+    # deadline and the input-box check below are what tell "sitting unsubmitted in
+    # the box" from "submitted, model working", and both are tick-accounted. AFTER
+    # submit is confirmed there is nothing left to look for but the turn ending, and
+    # re-deriving that from the transcript every 2s is 900 pointless reads across a
+    # 30-minute work order.
+    #
+    # So the gate arms only once the transcript has confirmed the submit
+    # ($T_SUBMITTED), which is exactly the state herdr mode gates in, with
+    # `herdr agent wait`, for the same reason (see its own gate above). Everything
+    # the unconfirmed path does keeps running unchanged on the 2s tick.
+    #
+    # A SLICE, NOT THE BUDGET. The gate's marker is read AFTER the transcript read,
+    # so a Stop that lands in between is not in the gate's window and the gate
+    # blocks for nothing — the slice is the ceiling on that latency, and the
+    # transcript read at the top of the next iteration is what actually answers.
+    # A single 600s blocking wait would have turned that miss into a 10-minute stall
+    # with the answer already on disk.
+    #
+    # GATED ON THE CALLEE'S SESSION ID, never on its cwd or its surface. A hotline
+    # callee runs in the caller's own cwd, and both of the weaker discriminators
+    # were measured to fail there — see cmux_wait_session_turn_end in repl-state.sh
+    # for the numbers. The screen-reading fallback below is untouched and is still
+    # the only thing that works on a cmux predating the event stream.
+    CMUX_GATE_SLICE="${HOTLINE_CMUX_TURN_WAIT_SLICE:-30}"
+    # cmux_events_supported caches its probe, so this costs one `cmux events
+    # --snapshot` per process however many ticks run.
+    turn_gate_ready() {
+      $T_SUBMITTED || return 1
+      [[ "$CMUX_GATE_SLICE" != "0" ]] || return 1
+      [[ -n "$SESSION_ID" ]] || return 1
+      cmux_events_supported || return 1
+    }
     # Grace-window state. -1 = no preempting prompt seen yet; otherwise the tick at
     # which one first appeared, so the window is measured from it in the same
     # accounting as TIMEOUT. (claude-plugins-mrpi)
@@ -1039,8 +1081,32 @@ if $CMUX_MODE; then
           ;;
         *)  FELL_BACK=true; break ;;   # extractor usage/read error → fall back
       esac
+      # Block on the callee's turn ending rather than ticking, where that is
+      # possible. Whether it settled or timed out is deliberately NOT branched on:
+      # a timeout means "still working", which is what the next transcript read
+      # confirms or refutes. This is a gate, not a verdict.
+      GATE_SECONDS=0
+      if turn_gate_ready; then
+        GATE_AFTER=$(cmux_events_seq 2>/dev/null || true)
+        if [[ -n "$GATE_AFTER" ]]; then
+          GATE_START=$(date +%s)
+          # The marker is set and cleared around the call rather than passed as a
+          # prefix assignment: on a FUNCTION call that assignment persists past the
+          # call in bash, and a stale seq inherited by the next tick's gate would
+          # match a replayed frame and return instantly — a gate that silently
+          # becomes the poll it replaced.
+          HOTLINE_EVENTS_AFTER="$GATE_AFTER"
+          cmux_wait_session_turn_end "$SESSION_ID" "$CMUX_GATE_SLICE" >/dev/null 2>&1 || true
+          HOTLINE_EVENTS_AFTER=""
+          GATE_SECONDS=$(( $(date +%s) - GATE_START ))
+          [[ $GATE_SECONDS -lt 0 ]] && GATE_SECONDS=0
+        fi
+      fi
       sleep "$POLL_SLEEP"
-      T_ELAPSED=$((T_ELAPSED + POLL_INTERVAL))
+      # The gate's real wall time is charged to the budget alongside the tick, the
+      # same way herdr mode charges its own: a 30s block costing 2s of budget would
+      # run a 1800s wait for hours.
+      T_ELAPSED=$((T_ELAPSED + POLL_INTERVAL + GATE_SECONDS))
     done
     if ! $FELL_BACK; then
       # Budget gone with the grace window still open: the last thing we knew was a

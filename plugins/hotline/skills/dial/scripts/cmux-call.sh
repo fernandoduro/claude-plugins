@@ -275,12 +275,12 @@ chmod 700 "$LAUNCH_SCRIPT"
 # diagnostic instead of a bare "cmux send failed".
 #
 # THE HANDLE IS CHECKED FIRST, and Ctrl-U clears the line before the command goes
-# out. `cmux send --surface ""` does not fail — it delivers to the FOCUSED surface
+# out. `cmux send --surface ""` does not fail — it falls back to $CMUX_SURFACE_ID
 # — and the input line is shared with the user, whose three stray keystrokes on
 # 2026-08-26 turned a launch command into `rkebash /tmp/…` (claude-plugins-r465.7).
 if [[ ${#SEND_TARGET[@]} -ne 2 ]] || ! cmux_handle_ok "launch send" "${SEND_TARGET[1]}"; then
   rm -f "$LAUNCH_SCRIPT"
-  jq -n --arg err "refusing to send the launch command: the $PLACEMENT placement produced no target handle, and cmux would deliver it to the focused surface" '{error: $err}'
+  jq -n --arg err "refusing to send the launch command: the $PLACEMENT placement produced no target handle, and cmux would fall back to \$CMUX_*_ID and deliver it to THIS pane" '{error: $err}'
   exit 1
 fi
 cmux_clear_input_line "launch send" "${SEND_TARGET[0]}" "${SEND_TARGET[1]}"

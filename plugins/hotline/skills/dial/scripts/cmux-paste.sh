@@ -327,6 +327,27 @@ paste_one() { # <payload-file> <submit-key>  — undelivered() exits on socket r
 SPLIT_PASTE=false
 hotline_payload_needs_split_delivery "$PAYLOAD_FILE" && SPLIT_PASTE=true
 
+# --- The fragmentation marker, taken BEFORE anything goes out. ---------------
+# One `terminal.paste` is supposed to land as ONE user turn (18/18 multi-line
+# trials). When it does not, the payload reaches the callee split across several
+# turns — and the ladder below reports that as a clean delivery, because it proves
+# the nonce ARRIVED and says nothing about how many turns it arrived as. A count of
+# the turns the callee ingested is the one thing that shows it.
+#
+# The marker is a seq, not a timestamp: the retained event buffer is a rolling
+# window that REPLAYS, so a query without it counts the previous exchange's turns
+# as this delivery's. cmux_events_seq yields empty (never 0) when it cannot read
+# one, and an empty marker means no count is taken at all — `--after 0` would
+# replay unrelated history and invent fragmentation.
+#
+# Nothing here is load-bearing for delivery: this is a diagnostic, and every
+# failure path simply omits the field.
+PASTE_SEQ=""
+INGEST_WINDOW="${HOTLINE_PASTE_INGEST_WINDOW:-2}"
+if [[ "$INGEST_WINDOW" != "0" ]]; then
+  PASTE_SEQ=$(cmux_events_seq 2>/dev/null || true)
+fi
+
 if $SPLIT_PASTE; then
   HEAD_FILE=$(mktemp); BODY_FILE=$(mktemp)
   # paste_one calls undelivered (which exits) on a socket refusal, before the rm
@@ -637,5 +658,38 @@ else
   undelivered "pasted into surface $SURFACE_REF but nonce $CALL_ID never appeared in the callee's transcript${TRANSCRIPTS[0]:+ (${TRANSCRIPTS[*]})} or on its screen; treating delivery as lost"
 fi
 
+# --- How many turns did it land as? -----------------------------------------
+# tripwire: claude-plugins-8ur4 — cmux#13687; a COUNT is all this can be while
+# message_length caps at 240. If that is fixed, add the length check back here
+# (it is the only thing that catches byte loss the head-anchored nonce cannot)
+# and keep this count.
+# Counted only on the confirmed path, and only when the marker above was read.
+# cmux_events_all cannot return early, so this spends its whole settle window on
+# every call, against a ladder that confirms in well under a second —
+# HOTLINE_PASTE_INGEST_WINDOW=0 buys that second back for a caller who does not
+# want the diagnostic. Do not raise the window: it is a settle budget, not an
+# upper bound a fast answer escapes.
+#
+# `delivered` AND `confirmed` DO NOT MOVE, whatever this says. A fragmented
+# payload IS in the callee's queue — calling it undelivered invites the caller to
+# deliver it a second time, which is the one failure worse than a split turn. So
+# the count is additive and nothing branches on it.
+#
+# OMITTED, never 0, when it could not be measured: no event stream, no seq marker,
+# a window of 0. A `0` there would assert the callee ingested nothing, which is
+# exactly what a confirmed delivery has just disproved.
+SUBMIT_FRAMES=""
+if [[ -n "$PASTE_SEQ" ]]; then
+  # HOTLINE_EVENTS_AFTER is how the primitives take a --after marker. A prefix
+  # assignment on a FUNCTION call persists past the call in bash, unlike on an
+  # external command — the command substitution's subshell is what actually keeps
+  # this seq from leaking into anything later.
+  SUBMIT_FRAMES=$(HOTLINE_EVENTS_AFTER="$PASTE_SEQ" \
+    cmux_prompt_ingests "$SURF_ID" "$SESSION_ID" "$INGEST_WINDOW" 2>/dev/null \
+    | grep -c . || true)
+fi
+
 jq -nc --arg c "$CONFIRMED" --arg w "$WS_ID" --arg s "$SURF_ID" --argjson r "$RETRIED_ENTER" \
-  '{delivered: true, sent: true, confirmed: $c, retried_enter: $r, workspace: $w, surface: $s}'
+  --arg sf "$SUBMIT_FRAMES" \
+  '{delivered: true, sent: true, confirmed: $c, retried_enter: $r, workspace: $w, surface: $s}
+   + (if $sf == "" then {} else {submit_frames: ($sf | tonumber)} end)'

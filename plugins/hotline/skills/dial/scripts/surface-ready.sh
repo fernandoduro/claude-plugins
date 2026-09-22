@@ -74,9 +74,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 # EXACTLY ONE target, and it must be non-empty. `cmux send --surface ""` does not
-# fail — it delivers to the FOCUSED surface, which on 2026-08-26 meant probe
-# echoes landing in an unrelated live claude session, twice. An unset handle is
-# therefore a usage error here, never a default (claude-plugins-r465.7).
+# fail — the empty value falls through to the inherited $CMUX_SURFACE_ID, so the
+# probe is delivered to THE CALLER'S OWN surface. On 2026-08-26 that meant probe
+# echoes landing in an unrelated live claude session, twice, and on 2026-09-21 in
+# the operator's own input box. An unset handle is therefore a usage error here,
+# never a default (claude-plugins-r465.7, -99nu).
 if [[ -n "$SURFACE" && -n "$WORKSPACE" ]]; then
   echo "surface-ready: pass --surface OR --workspace, not both" >&2
   exit 2
@@ -86,7 +88,7 @@ if [[ -n "$SURFACE" ]]; then
 elif [[ -n "$WORKSPACE" ]]; then
   TARGET_FLAG="--workspace"; TARGET="$WORKSPACE"
 else
-  echo "surface-ready: --surface <ref> or --workspace <ref> is required (an empty handle would be delivered to the focused surface)" >&2
+  echo "surface-ready: --surface <ref> or --workspace <ref> is required (an empty handle falls back to \$CMUX_SURFACE_ID and would be delivered to THIS pane)" >&2
   exit 2
 fi
 command -v cmux >/dev/null 2>&1 || { echo "surface-ready: cmux not on PATH" >&2; exit 2; }
@@ -101,8 +103,26 @@ attempt=0
 while :; do
   now_ts=$(date +%s)
   if (( now_ts - start_ts >= TIMEOUT )); then
+    # WHERE THE PROBE ACTUALLY WENT, measured rather than guessed. The >=2-hit
+    # test below already fails safe against a substituted target — a probe sent
+    # to surface X cannot round-trip on the surface Y we read — so the bug can
+    # never pass as success. It arrives as this timeout instead, with the three
+    # guesses below and no way to tell which. surface.input_sent's
+    # result.surface_id is the surface cmux resolved the handle to, so when it
+    # disagrees with the handle we named, that IS the cause and the other three
+    # are noise. Only asked for on the way out, so the happy path pays nothing.
+    LANDED=""
+    if cmux_events_supported; then
+      LANDED=$(cmux_last_send_target 3 || true)
+    fi
     {
       echo "surface-ready: timed out after ${TIMEOUT}s for ${TARGET}${PANE:+ (${PANE})}."
+      if [[ -n "$LANDED" ]]; then
+        echo "  The last probe cmux delivered resolved to surface ${LANDED}."
+        echo "  If that is not the surface you named, the handle did not resolve and"
+        echo "  cmux substituted a target — the probe ran somewhere else, which is why"
+        echo "  nothing echoed back here. Nothing below applies in that case."
+      fi
       echo "  Possible causes:"
       echo "    • Shell still initializing (slow rc files, network mounts, login banner)"
       echo "    • Target running a non-shell program that doesn't echo input"

@@ -230,7 +230,13 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   `set -euo pipefail` turns that into an exit before any output — so a script that
   meant to *degrade* to a fallback aborts the whole call instead, silently and with
   no diagnostic. Every cmux surface opener resolves ref→UUID this way: append
-  `|| true` and let the fallback below it run. Guarded by
+  `|| true` so the fallback below it can run — and make that fallback a loud
+  non-zero exit, never a null in a field callers read as a handle. Degrading to
+  `"surface_id": null` reported as success is *worse* than the abort it replaced:
+  `open-side-surface.sh --json` answered all four ids null for a completely healthy
+  surface, and that null is the documented first step of a payload typed into the
+  caller's own input box. A fresh surface is also not instantly enumerable, so
+  retry the lookup before concluding anything. Guarded by
   `plugins/cmux-cli/tests/side-surface-scope_test.sh`'s unresolvable-echoed-ref case
   and `cmux_close_surface_scoped`'s in `plugins/hotline/tests/`.
   **This entry named two sites and only one was fixed**, for months: cmux echoes an
@@ -239,7 +245,7 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   every cmux-transport hotline dial with it and orphaning a surface per attempt. An
   entry that names N sites is a liability until all N are changed — fix them in the
   same change-set, or name the unfixed one as its own bead.
-  (claude-plugins-h2et, -99nu)
+  (claude-plugins-h2et, -99nu, 238a67f)
 - **A wrapped CLI's chatter stays out of every captured JSON.** `gws` prints
   "Using keyring backend" to stderr and hotline hit the same class from stdout, so
   a `2>&1` capture yields a file that looks fine and fails every parse downstream.
@@ -380,6 +386,17 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   makes a socket-stub suite fail on macOS while CI's `/tmp` stays green. Keep those
   names short; `socket_stub_start` says so out loud when a path is over.
   (claude-plugins-ai7s, cmux-reuse-surface_test.sh:1068)
+- **Derive a stub's payload shapes from a real capture, never from the doc or from
+  imagination.** Invented shapes make a suite agree with itself: three bugs in the
+  cmux-events reader survived 30 green stub-driven cases and a full set of positive
+  controls, and all three were found by the first read-only call against real cmux —
+  `--snapshot --no-ack` returns nothing because the ack is the whole output, and
+  `payload.session_id` is a `cmux-feed-v1:<base64>:<base64>` composite that no
+  equality test against a bare uuid can match and that must never be passed on to a
+  caller. Capture a replay (`cmux events --after 0 … | jq`), build the fixtures from
+  those frames, and re-check any field a doc calls "exact" AT and ABOVE its stated
+  cap — `message_length` is capped at 240 and had been generalized as
+  character-exact from two samples of 119 and 43. (claude-plugins-056z)
 - **A fixture has to model the state the bug destroys, not a milder version of it.** A
   "user has scrolled up" screen that still rendered the input box left every
   box-shaped gate working, so no test could have caught the reads that followed the
@@ -401,6 +418,24 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   withhold from the environment whatever the code is meant to read from a file.
   (claude-plugins-7wze.8, 2a4cc64)
 
+  A fourth dimension is the fixture's TOPOLOGY — how the subject sits relative to
+  everything else. A hotline callee in a DETACHED placement gets its own cmux
+  workspace, so counting a callee's submitted turns by `workspace_id` and counting
+  them by `session_id`+`surface_id` return the same answer there; on the DEFAULT
+  side placement, where caller and callee share one workspace, the workspace-scoped
+  count returns 2 for a clean single-turn delivery. Measured on two real dials, and
+  the reason a smoke that exercises only the isolating topology can bless a scoping
+  that is wrong everywhere else: put the subject in the CROWDED topology, and pin
+  the disagreement between the right and the cheap implementation as its own case
+  (`events-primitives_test.sh` § 7c). (claude-plugins-056z, f302a5c)
+
+  The third dimension is the stub's LIFETIME. A stub that has already exited cannot
+  exhibit a hazard that only exists while the real program is still running: one that
+  `cat`s a finished file can never hold a reader up or take a SIGPIPE, and one that
+  sleeps a fixed time instead of honouring `--timeout` turns its own nap into a fake
+  overrun. Three cases guarding the cmux-events reader passed with every guard removed
+  until the stub streamed and stayed open for its window.
+  (claude-plugins-056z, a5c775b)
 - **SIGINT to a backgrounded process is a no-op, so "test the Ctrl-C path" needs job
   control and a group signal.** A background job of a shell without job control inherits
   SIGINT *ignored*, and a later `trap ... INT` cannot reclaim it — a probe that
@@ -422,7 +457,11 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   Claude-side install sat at 0.32.0 while `main` carried 0.32.1, and that install
   reported success without moving it. Refresh with `claude plugin update` and read
   the version `claude plugin list` reports; docs/release.md §4 has the sequence.
-  (228dd59, docs/release.md §4)
+  **This has now happened twice to the same plugin**: hotline's install sat at 0.34.1
+  while `main` carried 0.34.3, so the release's own bug fixes were absent from the
+  transport every dial on that machine used. Read the version back from the INSTALL,
+  never from the repo — a manifest bump is not a deployment.
+  (228dd59, docs/release.md §4, claude-plugins-056z)
 - **Flags become beads tasks at the moment of noticing.** "Worth fixing later" said
   in prose evaporates; `bd create` with `discovered-from` survives the session.
   (memory: feedback_flag_becomes_beads_task)

@@ -92,6 +92,9 @@ Exit codes:
   1 = cmux command failed (see stderr)
   2 = usage / dependency / context error
   3 = --wait-ready timed out (surface exists but PTY never echoed probe)
+  4 = the surface was created but cmux never resolved it to a UUID; the ids are
+      the point of the JSON, and a null one is how a payload reaches the CALLER'S
+      own input box, so this refuses rather than reporting nulls as success
   130 = interrupted (Ctrl-C)
 EOF
 }
@@ -177,8 +180,11 @@ fi
 # One snapshot, queried three ways: the ordered pane list, and the UUIDs of the
 # window and workspace that list came out of.
 # --id-format both is what puts `.id` (the UUIDs) in this snapshot; without it
-# every `.id` comes back null and the only thing we can hand `new-surface` is a
-# positional ref, which is not safe to target by (see the branch below).
+# pane and surface ids come back null and the only thing we can hand `new-surface`
+# is a positional ref, which is not safe to target by (see the branch below).
+# Workspace ids are the exception — they are UUIDs either way (measured).
+# tripwire: claude-plugins-7mff — whether side-by-side is supported at all on a
+# cmux that ignores this flag is still open; the answer changes this header.
 subject_tree=$(cmux tree --all --json --id-format both)
 
 # TSV: pane_ref \t index \t pane_id
@@ -317,31 +323,107 @@ if [[ -z "$new_surface" ]]; then
 fi
 
 # --- Resolve stable UUIDs (and human-readable names) for the new surface ---
+# How hard to try before giving up: ~0.8s total, spent only on the failing path.
+RESOLVE_TRIES="${CMUX_SIDE_RESOLVE_TRIES:-5}"
+RESOLVE_SLEEP="${CMUX_SIDE_RESOLVE_SLEEP:-0.2}"
 # The `OK ...` line only gives positional refs, which renumber as surfaces open
 # and close. Look the new surface up in a fresh `--id-format both` tree so we can
 # hand callers UUIDs (the `.id` fields) to target by — and use them ourselves for
-# the readiness probes below. If lookup fails, we fall back to refs so behavior
-# is never worse than before.
+# the readiness probes below. A ref that never resolves is a hard failure rather
+# than a degrade: see the refusal below for why a reported null is worse than an
+# error.
 #
 # The same lookup also pulls the surface's title and its workspace's name: a
 # positional ref like `surface:258` is meaningless to the human (cmux's UI never
 # shows it, and it renumbers), so callers need names to report back.
+# A FRESH SURFACE IS NOT INSTANTLY ENUMERABLE, so the lookup is retried. The
+# `OK surface:N` line comes back before the surface is necessarily in the tree,
+# and a single snapshot taken in that gap finds nothing — observed live with a
+# healthy surface that a tree taken moments later resolved perfectly.
+#
+# `read` consuming an empty lookup returns 1, which `set -euo pipefail` turns into
+# an abort before the next line runs, so every attempt keeps its `|| true`
+# (claude-plugins-h2et, -99nu). What that guard must NOT do is let an unresolved id
+# leave this script as success — see the refusal below.
 new_surface_id=""; new_pane_id=""; new_ws_id=""; new_surface_title=""; new_ws_name=""
-tree_both=$(cmux tree --all --json --id-format both 2>/dev/null || true)
-if [[ -n "$tree_both" ]]; then
-  IFS=$'\t' read -r new_surface_id new_pane_id new_ws_id new_surface_title new_ws_name < <(
-    printf '%s' "$tree_both" | jq -r --arg s "$new_surface" '
-      .windows[].workspaces[] as $ws
-      | $ws.panes[].surfaces[]
-      | select(.ref == $s)
-      | [(.id // ""), (.pane_id // ""), ($ws.id // ""), (.title // ""), ($ws.title // "")]
-      | @tsv' 2>/dev/null | head -1
-  ) || true
+resolve_tries=0
+tree_read_ok=false
+tree_err=""
+while :; do
+  tree_both=$(cmux tree --all --json --id-format both 2>/dev/null) || tree_both=""
+  if [[ -n "$tree_both" ]]; then
+    tree_read_ok=true
+    IFS=$'\t' read -r new_surface_id new_pane_id new_ws_id new_surface_title new_ws_name < <(
+      printf '%s' "$tree_both" | jq -r --arg s "$new_surface" '
+        .windows[].workspaces[] as $ws
+        | $ws.panes[].surfaces[]
+        | select(.ref == $s)
+        | [(.id // ""), (.pane_id // ""), ($ws.id // ""), (.title // ""), ($ws.title // "")]
+        | @tsv' 2>/dev/null | head -1
+    ) || true
+  fi
+  [[ -n "$new_surface_id" && -n "$new_pane_id" && -n "$new_ws_id" ]] && break
+  resolve_tries=$((resolve_tries + 1))
+  (( resolve_tries >= RESOLVE_TRIES )) && break
+  sleep "$RESOLVE_SLEEP"
+done
+
+# --- An unresolved id is a hard failure, never a reported null. --------------
+# Falling back to the positional ref and emitting `"surface_id": null` looked like
+# the safe degrade, and it is the documented lead-in to the worst failure here: a
+# caller does `SID=$(jq -r '.surface_id' …)`, gets an empty string, and the next
+# `cmux send --surface "$SID"` falls back to $CMUX_SURFACE_ID and types the payload
+# into THE CALLER'S OWN input box — exit 0, no warning. Only a caller that runs the
+# guard this skill prescribes escapes it, and a JSON contract must not depend on
+# every consumer remembering a guard.
+#
+# So: refuse.
+#
+# THE TRADEOFF, ACCEPTED DELIBERATELY. This is not a no-op for callers: hotline
+# guards on `surface_ref`, not `surface_id` (`cmux-call-async.sh`, and
+# `SURF_HANDLE="${SURF_ID:-$SURF_REF}"` below it), so it SURVIVED the old
+# ref-degrade — a dial whose surface was healthy, titled and ready completed on the
+# ref alone. Refusing therefore converts a limping-but-working dial into a hard
+# failure, and that is the cost.
+#
+# It is worth paying because of the one cause a retry cannot fix. If the lookup
+# failed because the echoed ref RENUMBERED — a `surface.moved` in the window
+# between cmux minting the ref and this snapshot is exactly that
+# (references/events.md) — then the ref no longer names the surface we created, and
+# proceeding on it is how a work order gets pasted into a BYSTANDER'S live REPL.
+# A failed dial is recoverable in one command; that is not recoverable at all.
+#
+# AND IT DELIBERATELY LEAVES AN ORPHAN. The surface exists and is not closed here,
+# because there is nothing safe to close it BY: `cmux close-surface` needs a handle,
+# and the only handle we have is the positional ref that may already name a
+# different slot — closing on it would reap whatever occupies that slot now, which
+# is the same reasoning that makes the caller's reap path refuse a ref
+# (cmux-call-async.sh). A leaked surface a human can see and close is strictly
+# better than a close that lands on a live tab. The diagnostic names the ref for
+# that human and deliberately does NOT print a `surface_id=` line, so no reaper
+# matches a UUID that was never resolved.
+#
+# Exit 4, distinct from 1 (create/parse), 2 (no panes / identify) and 3 (readiness
+# or an empty handle), so a caller can tell "cmux would not name what it just made"
+# from the failures it already handles.
+if [[ -z "$new_surface_id" || -z "$new_pane_id" || -z "$new_ws_id" ]]; then
+  {
+    echo "open-side-surface: created $new_surface but cmux never resolved it to a UUID after ${RESOLVE_TRIES} attempts — refusing to report a null id as success."
+    if ! $tree_read_ok; then
+      echo "  Cause: \`cmux tree --all --json --id-format both\` returned nothing on every attempt, so no lookup ran at all."
+    else
+      echo "  Cause: the tree read fine but held no surface with ref $new_surface. Positional refs renumber as surfaces open and close, so the ref cmux echoed may already name a different slot."
+    fi
+    echo "  A null surface_id is how a payload ends up in the CALLER'S input box: an empty handle makes \`cmux send\` fall back to \$CMUX_SURFACE_ID."
+    echo "  The surface was created and is NOT closed, because a positional ref is not safe to close by — it names whatever occupies that slot now. Find and close it by hand:"
+    echo "    cmux tree --all --json --id-format both"
+  } >&2
+  exit 4
 fi
-# Prefer UUIDs; fall back to the parsed refs when resolution came up empty.
-surface_handle="${new_surface_id:-$new_surface}"
-pane_handle="${new_pane_id:-$new_pane}"
-ws_handle="${new_ws_id:-$new_ws}"
+
+surface_handle="$new_surface_id"
+pane_handle="$new_pane_id"
+ws_handle="$new_ws_id"
 
 # --- Give the surface a human-visible name ---
 # A freshly-created surface inherits a generic auto-title ("zsh", the cwd
@@ -495,7 +577,8 @@ if [[ $OUTPUT_JSON -eq 1 ]]; then
 else
   printf 'OK %s %s %s (via %s, next to %s %s)\n' \
     "$new_surface" "$new_pane" "$new_ws" "$mode" "$SUBJECT" "$subject_pane"
-  # Print the UUID to target by (falls back to the ref if lookup came up empty).
+  # The UUID to target by. Reaching this line means it resolved — an unresolved
+  # one exits 4 above rather than printing a ref in a field callers read as a UUID.
   printf 'surface_id: %s\n' "$surface_handle"
   # Names, not refs, are what you report to the user.
   printf 'title: %s\n' "${new_surface_title:-(unnamed — rename it before reporting)}"
