@@ -245,7 +245,7 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   every cmux-transport hotline dial with it and orphaning a surface per attempt. An
   entry that names N sites is a liability until all N are changed — fix them in the
   same change-set, or name the unfixed one as its own bead.
-  (claude-plugins-h2et, -99nu, 81e0a4e)
+  (claude-plugins-h2et, -99nu, 238a67f)
 - **A wrapped CLI's chatter stays out of every captured JSON.** `gws` prints
   "Using keyring backend" to stderr and hotline hit the same class from stdout, so
   a `2>&1` capture yields a file that looks fine and fails every parse downstream.
