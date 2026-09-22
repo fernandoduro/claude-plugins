@@ -386,6 +386,12 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   makes a socket-stub suite fail on macOS while CI's `/tmp` stays green. Keep those
   names short; `socket_stub_start` says so out loud when a path is over.
   (claude-plugins-ai7s, cmux-reuse-surface_test.sh:1068)
+  The same root surprises path comparisons: macOS hands back a *symlinked*
+  `$TMPDIR` while git reports worktree paths physically, so a fixture that compares
+  a `mktemp -d` path against `git worktree list` matches nothing, and its assertions
+  read as absent rather than wrong — on macOS only, where CI cannot see it. Take the
+  physical path once: `TMP="$(cd "$(mktemp -d)" && pwd -P)"`.
+  (5768623, git-tree/tests/repo_cleanup_triage_test.sh)
 - **Derive a stub's payload shapes from a real capture, never from the doc or from
   imagination.** Invented shapes make a suite agree with itself: three bugs in the
   cmux-events reader survived 30 green stub-driven cases and a full set of positive
