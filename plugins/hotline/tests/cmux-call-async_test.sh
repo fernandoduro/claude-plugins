@@ -1251,6 +1251,90 @@ fi
 [[ -f "$call_dir/launch_script.txt" ]] && rm -f "$(cat "$call_dir/launch_script.txt")"
 rm -rf "$tmp" "$call_dir"
 
+# --- A ref-only opener payload DEGRADES visibly; no handle at all fails ------
+# The guard exists for "nothing to address the callee by", and it used to test
+# SURF_REF while the code below prefers SURF_ID — so the field that matters went
+# unchecked and the field that renumbers was the one enforced.
+#
+# It does NOT hard-require the UUID. cmux-cli and hotline are separate plugins on
+# independent versions, and a cmux-cli released before the UUID became mandatory
+# returns refs with null ids; failing here would break a hotline upgrade on an
+# un-upgraded sibling, which nothing declares a floor for. Reachable in practice:
+# the cached openers under the plugins dir on this machine all predate the
+# refusal. So the ref is accepted and the degrade is recorded where a failed dial
+# is diagnosed.
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-cmux-test-XXXXXX)
+mkdir -p "$tmp/cwd"
+: > "$tmp/screen.txt"
+make_min_surface_cmux "$tmp/bin"
+cat > "$tmp/open-side-refonly.sh" <<'EOF'
+#!/usr/bin/env bash
+# The pre-refusal opener's payload shape, verbatim: refs present, ids null.
+jq -nc '{surface_ref:"surface:777", surface_id:null,
+         pane_ref:"pane:55", pane_id:null, workspace_ref:"workspace:5",
+         workspace_id:null, workspace_name:null,
+         mode:"new-surface", ready:"ready", title_status:"applied"}'
+EOF
+chmod +x "$tmp/open-side-refonly.sh"
+REFONLY_OUT=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" \
+  HOTLINE_OPEN_SIDE_SURFACE="$tmp/open-side-refonly.sh" \
+  bash "$SCRIPT_UNDER_TEST" --cwd "$tmp/cwd" --prompt "hello" \
+    --name "hotline: refonly (work_order)" --label "refonly" 2>"$tmp/stderr.txt")
+refonly_cd=$(printf '%s' "$REFONLY_OUT" | jq -r '.call_dir // empty')
+if [[ -n "$refonly_cd" && ! -f "$refonly_cd/error.txt" ]]; then
+  pass "a ref-only opener payload still launches (no cmux-cli version floor to break on)"
+else
+  fail "a ref-only opener payload still launches (no cmux-cli version floor to break on)" \
+       "out=$REFONLY_OUT err=$(cat "$refonly_cd/error.txt" 2>/dev/null)"
+fi
+# The degrade has to be VISIBLE, in the file a failed dial is read from — a send
+# that lands on the wrong pane is otherwise indistinguishable from a transport bug.
+if grep -qF "DEGRADED HANDLE" "$refonly_cd/surface_err.txt" 2>/dev/null; then
+  pass "…and records the positional-ref degrade in surface_err.txt"
+else
+  fail "…and records the positional-ref degrade in surface_err.txt" \
+       "surface_err=$(cat "$refonly_cd/surface_err.txt" 2>/dev/null)"
+fi
+# Naming the opener is what makes "update cmux-cli" actionable: the resolver picks
+# from several roots and nothing else reports which one answered.
+if grep -qF "open-side-refonly.sh" "$refonly_cd/surface_err.txt" 2>/dev/null; then
+  pass "…naming the opener that answered"
+else
+  fail "…naming the opener that answered" "surface_err=$(cat "$refonly_cd/surface_err.txt" 2>/dev/null)"
+fi
+# And the callee is still addressed by the ref, since that is all there was.
+if [[ "$(cat "$refonly_cd/surface_ref.txt" 2>/dev/null)" == "surface:777" ]]; then
+  pass "…and falls back to the ref as the handle"
+else
+  fail "…and falls back to the ref as the handle" \
+       "surface_ref.txt=$(cat "$refonly_cd/surface_ref.txt" 2>/dev/null)"
+fi
+[[ -n "$refonly_cd" && -f "$refonly_cd/launch_script.txt" ]] && rm -f "$(cat "$refonly_cd/launch_script.txt")"
+rm -rf "$tmp" "$refonly_cd"
+
+# --- NEITHER a UUID nor a ref: that is the real "nothing to send to" ---------
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-cmux-test-XXXXXX)
+mkdir -p "$tmp/cwd"
+: > "$tmp/screen.txt"
+make_min_surface_cmux "$tmp/bin"
+cat > "$tmp/open-side-nothing.sh" <<'EOF'
+#!/usr/bin/env bash
+jq -nc '{surface_ref:null, surface_id:null, mode:"new-surface", ready:"ready"}'
+EOF
+chmod +x "$tmp/open-side-nothing.sh"
+NOHANDLE_OUT=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_STATE="$tmp" \
+  HOTLINE_OPEN_SIDE_SURFACE="$tmp/open-side-nothing.sh" \
+  bash "$SCRIPT_UNDER_TEST" --cwd "$tmp/cwd" --prompt "hello" \
+    --name "hotline: nohandle (work_order)" --label "nohandle" 2>"$tmp/stderr.txt")
+nohandle_cd=$(printf '%s' "$NOHANDLE_OUT" | jq -r '.call_dir // empty')
+if [[ "$(jq -r '.error // empty' "$nohandle_cd/error.txt" 2>/dev/null)" == *"neither a surface_id nor a surface_ref"* ]]; then
+  pass "no handle at all fails the dial, which is what this guard is for"
+else
+  fail "no handle at all fails the dial, which is what this guard is for" \
+       "out=$NOHANDLE_OUT error=$(cat "$nohandle_cd/error.txt" 2>/dev/null)"
+fi
+rm -rf "$tmp" "$nohandle_cd"
+
 # --detached: the label names the WORKSPACE, prefixed. `--window <name>` resolves a
 # window by the title of a workspace inside it, so a bare subject as a workspace
 # title could be picked up as a later dial's --window target.

@@ -510,7 +510,36 @@ else
       SURF_ID=$(printf '%s' "$SURF_JSON" | jq -r '.surface_id // empty')
       SURF_PANE=$(printf '%s' "$SURF_JSON" | jq -r '.pane_ref // empty')
       SURF_PANE_ID=$(printf '%s' "$SURF_JSON" | jq -r '.pane_id // empty')
-      [[ -z "$SURF_REF" ]] && fail_async "open-side-surface returned no surface_ref: $SURF_JSON"
+      # WHAT THIS GUARD IS FOR: having nothing to address the callee by. It used to
+      # test SURF_REF alone while SURF_HANDLE below prefers SURF_ID — so the field
+      # everything downstream actually uses was never checked, and the one that was
+      # checked is the one that renumbers.
+      #
+      # Both empty is the real failure: no handle, so nothing can be sent, read or
+      # closed.
+      if [[ -z "$SURF_ID" && -z "$SURF_REF" ]]; then
+        fail_async "open-side-surface returned neither a surface_id nor a surface_ref, so there is no handle to address the callee by. Opener: ${OPEN_SIDE_SURFACE:-<unresolved>}. Payload: $SURF_JSON"
+      fi
+      # A UUID ALONE IS NOT REQUIRED, deliberately. cmux-cli and hotline ship as
+      # separate plugins on independent versions, and an opener released before the
+      # UUID became mandatory degrades to the positional ref with null ids. Hard-
+      # failing here would break a hotline upgrade on an un-upgraded sibling plugin,
+      # and nothing anywhere declares "hotline needs cmux-cli >= X" — so the ref is
+      # accepted and the degrade is RECORDED instead of silently taken.
+      #
+      # surface_err.txt is where it goes because that is the file a failed dial is
+      # diagnosed from: dial.sh surfaces it, the orphan-reap path greps it, and it
+      # is already the opener's own stderr sink. A caller debugging a send that went
+      # to the wrong pane needs to know the handle was positional, and a ref is
+      # exactly what renumbers when a sibling closes or a surface moves.
+      if [[ -z "$SURF_ID" ]]; then
+        {
+          echo "DEGRADED HANDLE: open-side-surface returned the positional ref $SURF_REF and no surface_id, so this callee is addressed by a ref rather than a UUID."
+          echo "  A ref names whatever occupies that slot when a later call runs — it renumbers when a sibling surface closes or moves — so a send, read or close on it can land on the wrong surface."
+          echo "  Opener: ${OPEN_SIDE_SURFACE:-<unresolved>}"
+          echo "  Fix: update the cmux-cli plugin. A current opener resolves the UUID (retrying, since a fresh surface is not instantly enumerable) or exits 4 rather than reporting a null."
+        } >> "$CALL_DIR/surface_err.txt"
+      fi
     else
       rc=$?
       # The opener named the surface it had already created in its stderr, so
