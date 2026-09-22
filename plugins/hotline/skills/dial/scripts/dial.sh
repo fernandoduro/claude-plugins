@@ -1173,6 +1173,7 @@ emit_connected() {  # emit_connected <awaiting_response:true|false>
     --arg remote_pane "$REMOTE_PANE_OUT" \
     --arg confirmed "$DELIVERY_CONFIRMED" \
     --arg retried "$DELIVERY_RETRIED" \
+    --arg submit_frames "$DELIVERY_FRAMES" \
     --argjson first_contact "$FIRST_CONTACT" \
     --argjson identity_stale "$IDENTITY_STALE" \
     --argjson awaiting "$1" \
@@ -1187,6 +1188,7 @@ emit_connected() {  # emit_connected <awaiting_response:true|false>
      + (if $call_id  == "" then {} else {call_id:$call_id} end)
      + (if $confirmed == "" then {} else {confirmed:$confirmed} end)
      + (if $retried   == "" then {} else {retried_enter:($retried == "true")} end)
+     + (if $submit_frames == "" then {} else {submit_frames:($submit_frames|tonumber)} end)
      + (if $remote_target == "" then {} else {remote_target:$remote_target} end)
      + (if $remote_pane   == "" then {} else {remote_pane:$remote_pane} end)'
   exit 0
@@ -1207,6 +1209,12 @@ REMOTE_PANE_OUT=""
 # worth seeing before it becomes a bug report.
 DELIVERY_CONFIRMED=""
 DELIVERY_RETRIED=""
+# How many turns the payload landed as, where that could be counted at all. One is
+# a clean delivery; above one means the callee received the work order split across
+# turns, which every other field here reports as clean — `confirmed` proves the
+# nonce arrived, not how many turns it arrived in. Absent rather than 0 wherever the
+# event stream could not answer (no cmux events, a herdr callee, an unread marker).
+DELIVERY_FRAMES=""
 
 # ---------------------------------------------------------------------------
 # Step 5a — Follow-up into the surface the session already lives in.
@@ -1297,6 +1305,7 @@ if ! $FIRST_CONTACT && [[ "$TRANSPORT" == "cmux" ]]; then
       # cmux-paste.sh's confidence, forwarded rather than dropped.
       DELIVERY_CONFIRMED=$(jq -r '.confirmed // empty' <<<"$REUSE" 2>/dev/null)
       DELIVERY_RETRIED=$(jq -r 'if has("retried_enter") then (.retried_enter|tostring) else "" end' <<<"$REUSE" 2>/dev/null)
+      DELIVERY_FRAMES=$(jq -r '.submit_frames // empty' <<<"$REUSE" 2>/dev/null)
       [[ -s "$CALL_DIR/call_id.txt" ]] && CALL_ID_OUT=$(cat "$CALL_DIR/call_id.txt")
       # The reused surface is unchanged, but bump last_contact / exchange_count.
       # --call-dir moves with it: this reuse dir is what the NEXT follow-up's

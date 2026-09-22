@@ -390,7 +390,15 @@ rm -f "$PAYLOAD_FILE" "$BASELINE_FILE"
 # (claude-plugins-fkgv / -y4rl), which is invisible if the field stops here.
 DELIVERY_RETRIED=$(jq -r 'if .retried_enter == true then "true" else "false" end' \
   <<<"$DELIVERY_RESULT" 2>/dev/null) || DELIVERY_RETRIED=false
+# submit_frames travels for the same reason, and is OMITTED the same way it was
+# omitted upstream: cmux-paste.sh reports it only where it could count the turns the
+# callee ingested, and a 0 invented here would assert the opposite of the confirmed
+# delivery above it. A value above 1 means the payload landed as several turns —
+# delivered, but not as one.
+DELIVERY_FRAMES=$(jq -r '.submit_frames // empty' <<<"$DELIVERY_RESULT" 2>/dev/null) || DELIVERY_FRAMES=""
 jq -n --arg dir "$CALL_DIR" \
   --arg confirmed "$(jq -r '.confirmed // empty' <<<"$DELIVERY_RESULT" 2>/dev/null)" \
   --argjson retried "${DELIVERY_RETRIED:-false}" \
-  '{call_dir: $dir, delivery: "paste", confirmed: $confirmed, retried_enter: $retried}'
+  --arg frames "${DELIVERY_FRAMES:-}" \
+  '{call_dir: $dir, delivery: "paste", confirmed: $confirmed, retried_enter: $retried}
+   + (if $frames == "" then {} else {submit_frames: ($frames | tonumber)} end)'

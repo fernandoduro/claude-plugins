@@ -188,8 +188,8 @@ frames
 frame "{\"name\":\"workspace.prompt.submitted\",\"seq\":30,\"workspace_id\":\"$WS\",\"payload\":{\"message_length\":43}}"
 GOT=$(cmux_submit_lengths "$WS" 1 || true)
 [[ "$GOT" == "43" ]] \
-  && pass "one frame with the sent length → a clean submit" \
-  || fail "one frame with the sent length → a clean submit" "got '$GOT'"
+  && pass "one frame, length under the 240 cap → reported verbatim and exact" \
+  || fail "one frame, length under the 240 cap → reported verbatim and exact" "got '$GOT'"
 
 frames
 frame "{\"name\":\"workspace.prompt.submitted\",\"seq\":31,\"workspace_id\":\"$WS\",\"payload\":{\"message_length\":19}}"
@@ -197,6 +197,16 @@ GOT=$(cmux_submit_lengths "$WS" 1 || true)
 [[ "$GOT" == "19" ]] \
   && pass "a short length is reported verbatim, so a caller can call byte loss" \
   || fail "a short length is reported verbatim" "got '$GOT'"
+
+# 240 IS THE CAP, and it is passed through as-is rather than read as a verdict:
+# `message_length` is the length of the 240-char preview, so this means "240 or
+# more" and can never verify a real work order (all of which are longer).
+frames
+frame "{\"name\":\"workspace.prompt.submitted\",\"seq\":35,\"workspace_id\":\"$WS\",\"payload\":{\"message_length\":240}}"
+GOT=$(cmux_submit_lengths "$WS" 1 || true)
+[[ "$GOT" == "240" ]] \
+  && pass "a capped 240 is passed through unchanged, for the caller to read as 'at least 240'" \
+  || fail "a capped 240 is passed through unchanged" "got '$GOT'"
 
 frames
 frame "{\"name\":\"workspace.prompt.submitted\",\"seq\":32,\"workspace_id\":\"$WS\",\"payload\":{\"message_length\":20}}"
@@ -213,6 +223,99 @@ GOT=$(cmux_submit_lengths "$WS" 1 || true)
 [[ -z "$GOT" ]] \
   && pass "a submit in another workspace is not counted as ours" \
   || fail "a submit in another workspace is not counted as ours" "got '$GOT'"
+
+# --- 7b. cmux_prompt_ingests: how many turns did the callee actually ingest? --
+# The COUNT is the answer here, and its attribution is the whole point:
+# workspace.prompt.submitted (section 7) carries no surface_id and no session_id,
+# and a side-by-side hotline call puts caller and callee in ONE workspace, so a
+# count taken from it reports fragmentation whenever the operator types into their
+# own pane. These fixtures use the shapes of a real capture on 0.64.25: two phases
+# per occurrence, a composite session id, an upper-case surface uuid.
+ING_SURF="19702726-22F7-403C-9647-0F6FB86DC9F2"
+ING_UUID="6f0b4990-a577-434c-9940-6b3c10d5affa"
+ING_COMPOSITE="cmux-feed-v1:Y2xhdWRl:$(printf '%s' "$ING_UUID" | base64 | tr -d '\n')"
+ing() { # <seq> <surface> <session-composite> <phase>
+  frame "{\"name\":\"agent.hook.UserPromptSubmit\",\"seq\":$1,\"surface_id\":\"$2\",\"payload\":{\"phase\":\"$4\",\"session_id\":\"$3\",\"surface_id\":\"$2\",\"cwd\":\"/x\"}}"
+}
+
+frames
+GOT=$(cmux_prompt_ingests "$ING_SURF" "$ING_UUID" 1 | grep -c . || true)
+[[ "$GOT" == "0" ]] \
+  && pass "no ingest frame in the window → no turns counted" \
+  || fail "no ingest frame in the window → no turns counted" "got '$GOT'"
+
+frames
+ing 70 "$ING_SURF" "$ING_COMPOSITE" received
+ing 71 "$ING_SURF" "$ING_COMPOSITE" completed
+GOT=$(cmux_prompt_ingests "$ING_SURF" "$ING_UUID" 1 | grep -c . || true)
+[[ "$GOT" == "1" ]] \
+  && pass "both phases of ONE occurrence count as one turn (trap 4)" \
+  || fail "both phases of ONE occurrence count as one turn" "got '$GOT'"
+
+frames
+ing 72 "$ING_SURF" "$ING_COMPOSITE" completed
+ing 73 "$ING_SURF" "$ING_COMPOSITE" completed
+GOT=$(cmux_prompt_ingests "$ING_SURF" "$ING_UUID" 1 | grep -c . || true)
+[[ "$GOT" == "2" ]] \
+  && pass "two turns for one delivery → the fragmentation the count exists to show" \
+  || fail "two turns for one delivery → fragmentation" "got '$GOT'"
+
+# The surface half of the attribution: the same session reported against another
+# surface (a `claude --resume` puts one uuid in a second surface) is not ours.
+frames
+ing 74 "$ING_SURF" "$ING_COMPOSITE" completed
+ing 75 "82F23F19-F2E0-4F95-B616-FBAAD5CF3896" "$ING_COMPOSITE" completed
+GOT=$(cmux_prompt_ingests "$ING_SURF" "$ING_UUID" 1 | grep -c . || true)
+[[ "$GOT" == "1" ]] \
+  && pass "a turn in another surface is not counted, even for our own session" \
+  || fail "a turn in another surface is not counted" "got '$GOT'"
+
+# The session half: the caller's own REPL sharing our workspace is a DIFFERENT
+# session, which is the measured shape of a side-by-side call.
+frames
+ing 76 "$ING_SURF" "$ING_COMPOSITE" completed
+ing 77 "$ING_SURF" "cmux-feed-v1:Y2xhdWRl:$(printf '%s' 'b2d244b2-b67b-4f3b-bbc5-ed9217e6e691' | base64 | tr -d '\n')" completed
+GOT=$(cmux_prompt_ingests "$ING_SURF" "$ING_UUID" 1 | grep -c . || true)
+[[ "$GOT" == "1" ]] \
+  && pass "another session's turn is not counted as ours" \
+  || fail "another session's turn is not counted as ours" "got '$GOT'"
+
+# The handle a caller holds comes from the cmux tree and the frame's from the hook
+# bridge. A uuid differing only in case must not silently match nothing.
+frames
+ing 78 "$ING_SURF" "$ING_COMPOSITE" completed
+GOT=$(cmux_prompt_ingests "$(printf '%s' "$ING_SURF" | tr 'A-Z' 'a-z')" "$ING_UUID" 1 | grep -c . || true)
+[[ "$GOT" == "1" ]] \
+  && pass "the surface match is case-folded (tree case vs hook-bridge case)" \
+  || fail "the surface match is case-folded" "got '$GOT'"
+
+# With no session known the surface is the ONLY discriminator, and it must still
+# reject a foreign surface rather than degrade into a workspace-wide count.
+frames
+ing 79 "$ING_SURF" "$ING_COMPOSITE" completed
+ing 80 "82F23F19-F2E0-4F95-B616-FBAAD5CF3896" "$ING_COMPOSITE" completed
+GOT=$(cmux_prompt_ingests "$ING_SURF" "" 1 | grep -c . || true)
+[[ "$GOT" == "1" ]] \
+  && pass "with no session passed, the surface alone still scopes the count" \
+  || fail "with no session passed, the surface alone still scopes the count" "got '$GOT'"
+
+# A bare (unwrapped) session id must keep matching, so a cmux build that stops
+# wrapping the feed id does not silently zero every count.
+frames
+ing 81 "$ING_SURF" "$ING_UUID" completed
+GOT=$(cmux_prompt_ingests "$ING_SURF" "$ING_UUID" 1 | grep -c . || true)
+[[ "$GOT" == "1" ]] \
+  && pass "a bare (unwrapped) session id still matches" \
+  || fail "a bare (unwrapped) session id still matches" "got '$GOT'"
+
+# Trap 2b: the stub ignores --name, so only the client-side guard can reject a
+# workspace.prompt.submitted standing in for an ingest.
+frames
+frame "{\"name\":\"workspace.prompt.submitted\",\"seq\":82,\"workspace_id\":\"$WS\",\"payload\":{\"message_length\":240}}"
+GOT=$(cmux_prompt_ingests "$ING_SURF" "$ING_UUID" 1 | grep -c . || true)
+[[ "$GOT" == "0" ]] \
+  && pass "a workspace.prompt.submitted cannot satisfy an ingest count" \
+  || fail "a workspace.prompt.submitted cannot satisfy an ingest count" "got '$GOT'"
 
 # --- 8. The substituted-target check -----------------------------------------
 frames

@@ -313,19 +313,81 @@ cmux_wait_turn_end() {
 # default is small: distinguishing a clean submit from a fragmented one is the
 # only thing the extra wait buys, and the paste path confirms in well under a
 # second today. Do not raise it to a read-timeout-sized number.
-# The character-exact replacement for input-box forensics. Read the result as:
+#
+# `message_length` IS CAPPED AT 240 — it is the length of the 240-char
+# `message_preview`, not of the message (events.md has the measurement: 21/21
+# submissions with message_length == preview length, 14 at exactly 240, none
+# above). So read a value as three-valued, never as an equality:
 #   no lines        → nothing submitted; the text sits in the box and `send-key
 #                     Enter` is the fix (never a re-send, which appends).
-#   one line == sent → clean submit.
-#   one line < sent  → silent byte loss at the transport.
-#   several lines    → fragmentation; the payload arrived as multiple turns.
+#   one line < 240  → exact; a value under what was sent is byte loss at the
+#                     transport.
+#   one line == 240 → "240 or more", and nothing more. Every real hotline work
+#                     order is longer than that, so a whole payload and a
+#                     truncated one report the same number — this field CANNOT
+#                     verify one. Use the nonce (a grep -F of the call id in the
+#                     callee's transcript), which is byte-definitive.
+#   several lines   → fragmentation; the payload arrived as multiple turns.
 # Do NOT length-check against agent.hook.UserPromptSubmit instead: its
 # tool_input_length counts claude's own wrapping (56 where this reported 43).
+#
+# NOR IS THE COUNT HERE ATTRIBUTABLE TO ONE REPL. `workspace.prompt.submitted`
+# carries no surface_id and no session_id (measured: 16/16 frames with a null
+# top-level surface_id and no such payload key), so this is workspace-scoped —
+# and a side-by-side hotline call puts the caller's REPL and the callee's in ONE
+# workspace (measured: one workspace_id hosting two session_ids on two
+# surface_ids). Counting turns for a specific callee is cmux_prompt_ingests.
 cmux_submit_lengths() {
   local ws="$1" timeout="${2:-2}"
   cmux_events_all "$timeout" 10 \
     "select(.workspace_id == \"$ws\") | .payload.message_length" \
     workspace.prompt.submitted
+}
+
+# cmux_prompt_ingests <surface_id> <session_uuid|""> <settle_seconds>
+#   — one seq per prompt THIS callee's REPL ingested in the window.
+#
+# The count is the answer: two ingests for one delivery means the payload
+# arrived as several turns, which the paste path's confirmation ladder reports as
+# a clean delivery (it proves the nonce landed, not how many turns it landed as).
+#
+# `agent.hook.UserPromptSubmit` AND NOT `workspace.prompt.submitted`, even though
+# the latter is the REPL-accept signal, because the latter cannot say WHOSE
+# submit it was: it carries no surface_id and no session_id, and a side-by-side
+# call shares one workspace between caller and callee (see cmux_submit_lengths).
+# A workspace-scoped count would report fragmentation for a clean delivery
+# whenever the operator typed into their own pane inside the settle window.
+# UserPromptSubmit carries surface_id, session_id and cwd on every frame
+# (measured: 21/21, both phases), so the attribution is exact. The
+# tool_input_length warning on that event is about its LENGTH, which this does
+# not read.
+#
+# It fires when claude INGESTS the prompt, not when the box accepts it, so a
+# paste QUEUED behind a live turn is counted when the queue flushes — possibly
+# after this window closes. That direction is an undercount: a caller sees 1 (or
+# 0) where more are pending, never a fragmentation alarm for a clean delivery.
+#
+# Case-insensitive on the surface id: the handle a caller holds comes from the
+# cmux tree and the frame's comes from the hook bridge, and a UUID that differs
+# only in case would silently match nothing.
+cmux_prompt_ingests() {
+  local surf="$1" sess="${2:-}" timeout="${3:-2}"
+  local surf_lc
+  surf_lc=$(printf '%s' "$surf" | tr 'A-Z' 'a-z')
+  local sesssel=""
+  if [[ -n "$sess" ]]; then
+    local sess_b64
+    sess_b64=$(printf '%s' "$sess" | base64 | tr -d '\n')
+    # The composite cmux reports today (cmux-feed-v1:<b64 agent>:<b64 uuid>), or a
+    # bare uuid — see cmux_wait_session_start for why both spellings are accepted.
+    sesssel=" and ((.payload.session_id // \"\") | (. == \"$sess\" or contains(\"$sess_b64\")))"
+  fi
+  # --limit counts frames, but --name has already narrowed them server-side, so 20
+  # is 20 prompt submissions inside the settle window — far more than any
+  # fragmentation this is looking for.
+  cmux_events_all "$timeout" 20 \
+    "select(.payload.phase == \"completed\" and (((.payload.surface_id // .surface_id) // \"\") | ascii_downcase) == \"$surf_lc\"$sesssel) | .seq" \
+    agent.hook.UserPromptSubmit
 }
 
 # cmux_last_send_target <timeout> — the surface the most recent send RESOLVED to.
