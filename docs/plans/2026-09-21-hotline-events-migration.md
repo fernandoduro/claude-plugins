@@ -155,12 +155,26 @@ PRIMARY tier is already byte-definitive (a `grep -F` for the call-id nonce in th
 callee's transcript) and remains the only thing that covers a long payload.
 
 What is still worth adding, and needs no calibration: **a frame COUNT**. Two
-`workspace.prompt.submitted` frames for one send is fragmentation — the callee
-received the work order split across turns — and the current ladder reports that
-as a clean delivery. Baseline `cmux_events_seq` before the paste, count frames
-after, and report the count in an additive JSON field beside `confirmed`.
+submitted frames for one send is fragmentation — the callee received the work
+order split across turns — and the current ladder reports that as a clean
+delivery. Baseline `cmux_events_seq` before the paste, count frames after, and
+report the count in an additive JSON field beside `confirmed`.
 `delivered`/`confirmed` must NOT change: a fragmented payload IS in the callee's
 queue, and calling it undelivered invites a double-delivery.
+
+**Count `agent.hook.UserPromptSubmit`, not `workspace.prompt.submitted`.** The
+submitted event cannot say WHOSE submit it was: measured on 0.64.25, 16/16 frames
+carry a null top-level `surface_id` and no payload key for one, leaving only
+`workspace_id` — and the default side-by-side placement puts the caller's REPL and
+the callee's in ONE workspace (measured: one `workspace_id` over two `session_id`s
+on two `surface_id`s, 12 submits splitting 7/5 between them). A workspace-scoped
+count reports fragmentation every time the operator types into their own pane
+inside the settle window. `agent.hook.UserPromptSubmit` carries `surface_id`,
+`session_id` and `cwd` on 21/21 frames in both phases, so the attribution is
+exact; the standing warning about that event concerns its LENGTH, which a count
+does not read. It fires on claude's ingest rather than the box's accept, so a
+queued paste is counted when the queue flushes — an undercount, never a false
+alarm.
 
 Mind the cost: `cmux_events_all` cannot return early, so `cmux_submit_lengths`
 spends its whole settle window (default 2s) on every call, against a ladder that
@@ -180,11 +194,20 @@ transcript tier, the nonce bracketing and the 0/3/4/5 exit contract alone.
 Suite: `wait-for-response_test.sh`, `transport-signal_test.sh`.
 
 **`cmux_wait_turn_end` as it stands is NOT sufficient here.** Measured live:
-`agent.hook.Stop` carries a null `surface_id` on most real frames, so the null
-fallback in that filter is what makes it match at all — and that same fallback
-means ANY session's turn end satisfies it, including the operator's own. A
-caller waiting on callee X would wake on the user finishing a turn. Real frames
-do carry `payload.cwd` and `payload.session_id`, so discriminate on those.
+`agent.hook.Stop` carries a null `surface_id` on most real frames (18 of 42, with
+`payload.surface_id` null on exactly the same 18), so the null fallback in that
+filter is what makes it match at all — and that same fallback means ANY session's
+turn end satisfies it, including the operator's own. A caller waiting on callee X
+would wake on the user finishing a turn.
+
+**Discriminate on `payload.session_id`, and on nothing else.** `payload.cwd` is
+the other field every frame carries and it is not usable, measured two ways in one
+900-frame replay: one directory carried `agent.hook` frames for two different
+sessions — and a hotline callee runs in the CALLER'S OWN cwd by definition, so that
+collision is the common case — while one session emitted frames under both its
+launch directory and a subdirectory it had `cd`'d into. The first wakes a waiter on
+somebody else's turn; the second blocks it through a turn end that did happen. With
+no session id to attribute to, keep the poll.
 
 Note `payload.session_id` is a composite, `cmux-feed-v1:<base64 agent
 name>:<base64 session uuid>` — see `cmux_wait_session_start` in `repl-state.sh`

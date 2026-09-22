@@ -119,7 +119,7 @@ Exactly one JSON object on stdout, always. Read `.status`:
 
 | `.status` | exit | What it means | What you do |
 |---|---|---|---|
-| `connected` | 0 | The callee is up. `.remote_session_id`, `.workspace`, `.transport`, `.call_dir`, `.surface_ref`, `.first_contact`, `.fallbacks` describe the call. On a follow-up into a live surface, `.confirmed` and `.retried_enter` describe how the delivery landed. | Report the connection to the user, then wait for the response (below) — unless `.awaiting_response` is `false`. |
+| `connected` | 0 | The callee is up. `.remote_session_id`, `.workspace`, `.transport`, `.call_dir`, `.surface_ref`, `.first_contact`, `.fallbacks` describe the call. On a follow-up into a live surface, `.confirmed`, `.retried_enter` and `.submit_frames` describe how the delivery landed. | Report the connection to the user, then wait for the response (below) — unless `.awaiting_response` is `false`. |
 | `replay` | 2 | Identity needed a second pass. `.fingerprint` is now in the transcript. | Run **the identical command again**. Nothing else. Don't explain it to the user. |
 | `needs_disambiguation` | 3 | The reference matched several workspaces; `.candidates` has them. | Ask the user which one, then re-run with `--target <their chosen path>`. |
 | `error` | 1 | `.stage` (`args`/`identity`/`resolve`/`transport`/`fire`/`boot`/`deliver`), `.detail` (real stderr), `.recovery` (one-line hint). | Surface `.detail` and `.recovery` to the user, and leave the retry to them. |
@@ -142,6 +142,13 @@ of the callee's JSONL and is definitive; `screen` inferred it from the rendered
 viewport. `.retried_enter: true` means the paste's own submit key was dropped and one
 corrective Enter submitted it — the delivery is good, but a run of them is worth
 reporting.
+
+`.submit_frames` counts the turns the payload landed as. One is a clean delivery.
+**Above one means the callee received the work order split across several turns** —
+still delivered, and `.confirmed` says so, but the callee read it in pieces, which is
+worth reporting and never a reason to re-dial (that would run the order twice). The
+field is absent, rather than 0, wherever the count could not be taken: a cmux with no
+event stream, a herdr callee, or a first contact.
 
 `transport` means the backend the caller asked for is not usable here — herdr is not
 installed, or no herdr server answered. **It is never a degradation**: an explicit
