@@ -282,6 +282,22 @@ cmux_submit_lengths() {
     workspace.prompt.submitted
 }
 
+# cmux_last_send_target <timeout> — the surface the most recent send RESOLVED to.
+# The diagnostic counterpart to cmux_send_landed_on: that one answers "did it go
+# where I meant", this one answers "then where did it go", which is the sentence
+# an opaque timeout is missing. The ledger's entry on echoed targets asks for
+# exactly this field, because a wrong answer arrives as a successful one.
+cmux_last_send_target() {
+  local timeout="${1:-3}"
+  local frame
+  frame=$(cmux_events_first "$timeout" "select(.payload.result.surface_id != null)" \
+            surface.input_sent surface.key_sent) || return 1
+  local sid
+  sid=$(printf '%s' "$frame" | jq -r '.payload.result.surface_id // empty' 2>/dev/null) || true
+  [[ -n "$sid" && "$sid" != "null" ]] || return 1
+  printf '%s' "$sid"
+}
+
 # cmux_send_landed_on <intended_surface_id> <timeout> — 0 iff the last send
 # resolved to the surface we meant. This is the mechanical form of the
 # substituted-target check cmux_handle_ok can only refuse in advance: a handle

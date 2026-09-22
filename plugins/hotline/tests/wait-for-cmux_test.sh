@@ -741,6 +741,115 @@ else
 fi
 rm -rf "$tmp"
 
+# --- Signal D: agent.hook.SessionStart ---------------------------------------
+# The three original boot signals all INFER a boot: a banner regex on screen, a
+# transcript file growing, an input box being drawn. Signal D is claude's own
+# hook reporting it, and its payload carries the real session id, so it confirms
+# session_id_preset.txt rather than promoting an id nothing verified.
+#
+# Case S1 above already covers the fallback, because the stub there answers no
+# `events` subcommand at all — which is exactly why signal D needs its own stub
+# here. A suite whose cmux cannot answer `events` can never exercise it.
+make_events_fake_cmux() {
+  local bin_dir="$1"
+  mkdir -p "$bin_dir"
+  cat > "$bin_dir/cmux" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  read-screen)
+    echo "$@" >> "${CMUX_FAKE_STATE:?}/read_calls"
+    cat "${CMUX_FAKE_SCREEN:?}" ;;
+  events)
+    shift
+    for a in "$@"; do
+      [[ "$a" == "--snapshot" ]] && {
+        printf '{"type":"ack","resume":{"oldest_seq":1,"latest_seq":100,"gap":false}}\n'; exit 0; }
+    done
+    # The retained buffer replays, so a baselined --after still sees the frame.
+    [[ -n "${CMUX_FAKE_SESSION_EVENT:-}" ]] && printf '%s\n' "$CMUX_FAKE_SESSION_EVENT"
+    # A real `cmux events --timeout N` holds the stream for its window then exits.
+    prev=""; hold=1
+    for a in "$@"; do [[ "$prev" == "--timeout" ]] && hold="$a"; prev="$a"; done
+    sleep "$hold"
+    exit 0 ;;
+  tree)           jq -nc '{windows:[{workspaces:[{id:"WS-UUID-777",ref:"workspace:5",
+                    panes:[{selected_surface_id:"SURF-UUID-777",
+                            surfaces:[{id:"SURF-UUID-777",ref:"surface:777"}]}]}]}]}' ;;
+  focus-pane)     echo "$@" >> "${CMUX_FAKE_STATE:?}/focus_calls" ;;
+  *)              exit 0 ;;
+esac
+EOF
+  chmod +x "$bin_dir/cmux"
+}
+
+# Case D1: no banner, no input box, no transcript — signal D alone must boot it.
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-wait-test-XXXXXX)
+make_events_fake_cmux "$tmp/bin"
+printf 'nothing that looks like a REPL here\n' > "$tmp/screen.txt"
+cd="$tmp/call"
+stage_surface_call_dir "$cd" "evt-preset-1" "surface:777"
+echo "/Users/x/proj" > "$cd/cwd.txt"
+EVT='{"name":"agent.hook.SessionStart","seq":42,"surface_id":"SURF-UUID-777","payload":{"phase":"completed","session_id":"evt-preset-1","cwd":"/Users/x/proj"}}'
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_SCREEN="$tmp/screen.txt" CMUX_FAKE_STATE="$tmp" \
+  CMUX_FAKE_SESSION_EVENT="$EVT" \
+  bash "$WAIT_SESSION" "$cd" --timeout 6 2>"$tmp/err.txt")
+rc=$?
+if [[ $rc -eq 0 && "$out" == "evt-preset-1" ]]; then
+  pass "signal D: a SessionStart boots the wait with no banner, box or transcript"
+else
+  fail "signal D: a SessionStart boots the wait with no banner, box or transcript" \
+       "rc=$rc stdout=$out stderr=$(cat "$tmp/err.txt")"
+fi
+rm -rf "$tmp"
+
+# Case D2: the SAME cwd, a DIFFERENT session id — the operator's own claude
+# session in the callee's directory. A cwd-only match would promote this as our
+# boot, print a session id that is not ours, and hand the caller a stranger's
+# session to talk to.
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-wait-test-XXXXXX)
+make_events_fake_cmux "$tmp/bin"
+printf 'nothing that looks like a REPL here\n' > "$tmp/screen.txt"
+cd="$tmp/call"
+stage_surface_call_dir "$cd" "evt-preset-2" "surface:777"
+echo "/Users/x/proj" > "$cd/cwd.txt"
+EVT='{"name":"agent.hook.SessionStart","seq":43,"surface_id":"SURF-UUID-777","payload":{"phase":"completed","session_id":"SOMEONE-ELSES-SESSION","cwd":"/Users/x/proj"}}'
+out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_SCREEN="$tmp/screen.txt" CMUX_FAKE_STATE="$tmp" \
+  CMUX_FAKE_SESSION_EVENT="$EVT" \
+  bash "$WAIT_SESSION" "$cd" --timeout 4 2>"$tmp/err.txt")
+rc=$?
+if [[ $rc -ne 0 && "$out" != "SOMEONE-ELSES-SESSION" ]]; then
+  pass "signal D: another session booting in the same cwd is not promoted as ours"
+else
+  fail "signal D: another session booting in the same cwd is not promoted as ours" \
+       "rc=$rc stdout=$out"
+fi
+# And the timeout diagnostic must say the event signal WAS armed — otherwise the
+# reader cannot tell "claude never emitted SessionStart" from "we never looked".
+if grep -q 'agent.hook.SessionStart' "$tmp/err.txt"; then
+  pass "signal D: the timeout diagnostic reports that the event signal was armed"
+else
+  fail "signal D: the timeout diagnostic reports that the event signal was armed" \
+       "stderr=$(cat "$tmp/err.txt")"
+fi
+rm -rf "$tmp"
+
+# Case D3: cwd.txt absent, so signal D cannot be armed at all. The wait must fall
+# back to the screen signals rather than failing, and must SAY it fell back.
+tmp=$(mktemp -d "$TMP_ROOT"/hotline-wait-test-XXXXXX)
+make_events_fake_cmux "$tmp/bin"
+printf 'nothing that looks like a REPL here\n' > "$tmp/screen.txt"
+cd="$tmp/call"
+stage_surface_call_dir "$cd" "evt-preset-3" "surface:777"
+PATH="$tmp/bin:$PATH" CMUX_FAKE_SCREEN="$tmp/screen.txt" CMUX_FAKE_STATE="$tmp" \
+  bash "$WAIT_SESSION" "$cd" --timeout 3 >/dev/null 2>"$tmp/err.txt" || true
+if grep -q 'event stream was not used' "$tmp/err.txt"; then
+  pass "signal D: with no cwd the diagnostic says only screen signals were armed"
+else
+  fail "signal D: with no cwd the diagnostic says only screen signals were armed" \
+       "stderr=$(cat "$tmp/err.txt")"
+fi
+rm -rf "$tmp"
+
 # Case S2: wait-for-response extracts STATUS via the surface and, with keep=true
 # (the surface-mode default), does NOT close the surface or any workspace.
 tmp=$(mktemp -d "$TMP_ROOT"/hotline-wait-test-XXXXXX)

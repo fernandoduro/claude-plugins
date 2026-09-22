@@ -627,11 +627,11 @@ esac
 # Fire the claude session into whichever surface/workspace we landed on.
 #
 # THE HANDLE IS CHECKED FIRST. `cmux send --surface ""` does not fail — it
-# delivers to the FOCUSED surface, so an empty SEND_TARGET would type a claude
+# falls back to the inherited $CMUX_*_ID, so an empty SEND_TARGET would type a claude
 # launch command into whatever the user is looking at. Two real incidents on
 # 2026-08-26 came from exactly that fallback (claude-plugins-r465.7).
 if [[ ${#SEND_TARGET[@]} -ne 2 ]] || ! cmux_handle_ok "launch send" "${SEND_TARGET[1]}"; then
-  fail_async "refusing to send the launch command: the ${PLACEMENT} placement produced no target handle, and cmux would deliver it to the focused surface"
+  fail_async "refusing to send the launch command: the ${PLACEMENT} placement produced no target handle, and cmux would fall back to \$CMUX_*_ID and deliver it to THIS pane"
 fi
 
 # Ctrl-U before the command. The surface's input line is shared with the user, and

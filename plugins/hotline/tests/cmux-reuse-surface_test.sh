@@ -1185,7 +1185,8 @@ failed_rows=$(PATH="$rows_dir/nocmux:/usr/bin:/bin" bash -c \
   && pass "a pane that cannot be measured falls back to the ${HOTLINE_SCREEN_TAIL_LINES}-row constant" \
   || fail "an unmeasurable pane falls back to the constant" "got '$failed_rows'"
 # An empty handle is refused before it reaches cmux, like every other call here:
-# cmux resolves a missing target to the FOCUSED surface (claude-plugins-r465.9).
+# a cmux CLI verb falls back to the inherited $CMUX_*_ID, so an empty handle is
+# delivered to the CALLER'S OWN surface (claude-plugins-r465.9, -99nu).
 : > "$rows_dir/calls.log"
 STUB_CALLLOG="$rows_dir/calls.log" PATH="$rows_dir/bin:$PATH" \
   bash -c "source '$HOTLINE_DIR/scripts/repl-state.sh'; cmux_screen_rows probe --surface ''" \
@@ -1336,7 +1337,7 @@ else
 fi
 
 # NO SEND MAY GO OUT WITH AN EMPTY TARGET. `cmux send --surface ""` does not fail —
-# it delivers to the FOCUSED surface. On 2026-08-26 that put probe keystrokes into
+# it falls back to $CMUX_SURFACE_ID and delivers to THE CALLER'S OWN surface. On 2026-08-26 that put probe keystrokes into
 # an unrelated live claude session twice, and it is the same rule that let a
 # camelCase RPC read a bystander's terminal (claude-plugins-r465.7, r465.9).
 if grep -qE "^(send|send-key|read-screen) .*--(surface|workspace) ''" "$CALLLOG"; then

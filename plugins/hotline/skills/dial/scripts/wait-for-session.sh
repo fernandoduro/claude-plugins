@@ -273,6 +273,27 @@ if $CMUX_MODE; then
   SAW_BANNER=false
   SAW_TRANSCRIPT=false
   SAW_BOX=false
+
+  # SIGNAL D — agent.hook.SessionStart, claude's own boot hook (repl-state.sh).
+  # Strictly stronger than the three below: A matches a banner regex that
+  # scrollback eviction and --resume variance can defeat, B infers a boot from a
+  # file growing, C infers one from a drawn box. D is claude reporting it, and its
+  # payload carries the REAL session id — so it CONFIRMS session_id_preset.txt
+  # instead of promoting an id nothing ever verified.
+  #
+  # The preset is passed so the match is exact. A cwd is not unique to a call: the
+  # operator's own claude session in the same directory emits an
+  # identical-looking SessionStart, and a cwd-only match would promote a boot that
+  # is not ours.
+  #
+  # Baselined to a seq here rather than re-read per tick because the retained
+  # buffer REPLAYS: a frame that landed during an earlier tick is still found on a
+  # later one, so the poll below cannot miss the boot between ticks.
+  EVENTS_SEQ=""
+  if [[ -n "${RECV_CWD:-}" && -n "${PRESET:-}" ]] && cmux_events_supported; then
+    EVENTS_SEQ=$(cmux_events_seq || true)
+  fi
+
   ELAPSED=0
   while [[ ! -f "$CALL_DIR/session_id.txt" ]]; do
     check_early_fail
@@ -292,6 +313,14 @@ if $CMUX_MODE; then
       # built for reads as a generic timeout again.
       if [[ -n "$LAST_LAUNCH_ERR" ]]; then
         DIAG+=" The surface showed a refused launch line and a re-send did not visibly boot: ${LAST_LAUNCH_ERR}."
+      fi
+      # Say whether the event signal was armed. Without this the reader cannot
+      # tell "claude never emitted SessionStart" from "we never watched for it",
+      # and those have different fixes.
+      if [[ -n "$EVENTS_SEQ" ]]; then
+        DIAG+=" No agent.hook.SessionStart for session ${PRESET} in ${RECV_CWD:-the callee cwd} either, which is claude's own boot hook — so the REPL did not reach a session, rather than booting unseen."
+      else
+        DIAG+=" The cmux event stream was not used for this wait (no cmux events support, or cwd/preset unknown), so only the screen and transcript signals were armed."
       fi
       echo "Timed out waiting for Claude REPL to boot in cmux ${REF} (${TIMEOUT}s).${DIAG} The screen reads are scroll-immune (--scrollback --lines), so a scrolled pane is not the cause, and a shell error on the launch line would have been reported above. Common causes: the launch-script claude invocation is malformed (e.g. --allowedTools split into two argv words instead of --allowedTools=<list>), or the surface/workspace lost its tty." >&2
       exit 1
@@ -405,7 +434,21 @@ if $CMUX_MODE; then
       fi
     fi
 
-    sleep 1
+    # Signal D IS this tick's sleep when the stream is available: the call blocks
+    # for a second waiting for the frame and returns the instant it lands, so the
+    # authoritative signal costs no latency that the old `sleep 1` did not.
+    # Falling back to the plain sleep keeps A/B/C on their original cadence for a
+    # cmux with no event stream.
+    if [[ -n "$EVENTS_SEQ" ]]; then
+      SID_D=$(HOTLINE_EVENTS_AFTER="$EVENTS_SEQ" \
+              cmux_wait_session_start "$RECV_CWD" 1 "$PRESET" || true)
+      if [[ -n "$SID_D" ]]; then
+        echo "$SID_D" > "$CALL_DIR/session_id.txt"
+        break
+      fi
+    else
+      sleep 1
+    fi
     ELAPSED=$((ELAPSED + 1))
   done
 
