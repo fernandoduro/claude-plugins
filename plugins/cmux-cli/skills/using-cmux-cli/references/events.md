@@ -44,6 +44,15 @@ cmux events --name surface.created --limit 1 --timeout 30 \
 
 ## The catalog
 
+**A replay window does not reach the newest frames, so never use one to ask "did
+X just happen".** `--after <seq> --limit <n>` returns frames from that seq
+forward and stops well short of `latest_seq`: three consecutive queries
+(`--after 0`, `--after 17000`, `--after latest-1200`) all reported no trace of a
+session that a 25-second LIVE watch then showed emitting on every turn. Windowed
+absence is not even evidence of recent absence. To ask about the present, watch
+the live stream or resume from `--cursor-file`; use `--after` only to read a
+range you have already bounded.
+
 Harvested live from replays on cmux 0.64.25. **The retained buffer is a rolling window**, so no single replay contains every name — `surface.input_sent` and `agent.hook.Notification` appear in one replay and are gone from the next taken minutes later. Treat a name's absence from a replay as "nothing did that recently", never as "this event does not exist". cmux may also add names; re-harvest with
 `cmux events --after 0 --no-ack --no-heartbeat --limit 900 --timeout 10 2>/dev/null | jq -r '[.category,.name]|@tsv' | sort -u`.
 
