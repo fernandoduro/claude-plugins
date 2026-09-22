@@ -335,6 +335,33 @@ case "$1" in
     [[ "$n" -gt 0 ]] && cat "$STUB_SCREENS/$c.txt"
     exit 0
     ;;
+  events)
+    # OPT-IN. Without $STUB_EVENTS this falls through to `exit 0`, which is what a
+    # cmux predating the event stream does — so every case above keeps running the
+    # screen-reading path, and the event path is only live where a case asks for it.
+    [[ -z "${STUB_EVENTS:-}" ]] && exit 0
+    shift
+    snap=0; noack=0; after=0; prev=""
+    for a in "$@"; do
+      [[ "$a" == "--snapshot" ]] && snap=1
+      [[ "$a" == "--no-ack" ]] && noack=1
+      [[ "$prev" == "--after" ]] && after="$a"
+      prev="$a"
+    done
+    if [[ $snap -eq 1 ]]; then
+      # Real cmux prints ONLY the ack for --snapshot and exits, so --no-ack
+      # suppresses its single line and yields nothing at all.
+      [[ $noack -eq 1 ]] && exit 0
+      printf '{"type":"ack","resume":{"oldest_seq":1,"latest_seq":%s,"gap":false}}\n' \
+        "${STUB_EVENT_SEQ:-900}"
+      exit 0
+    fi
+    [[ $noack -eq 0 ]] && printf '{"type":"ack","resume":{"latest_seq":%s}}\n' "${STUB_EVENT_SEQ:-900}"
+    if [[ -n "${STUB_EVENT_FRAMES:-}" && -f "${STUB_EVENT_FRAMES:-}" ]]; then
+      jq -c --argjson a "$after" 'select((.seq // 0) > $a)' "$STUB_EVENT_FRAMES" 2>/dev/null
+    fi
+    echo "Error: Timed out waiting for a matching event" >&2
+    exit 0 ;;
   capabilities)
     # Absent by default: a cmux that cannot render a styled grid must leave the
     # placeholder judgement unable to answer, which is the fail-closed direction.
@@ -368,6 +395,8 @@ STUB
     STUB_SURF="$SURF_UUID" STUB_WS="$WS_UUID" \
     STUB_NO_TREE="${CASE_NO_TREE:-}" STUB_ORPHAN_TREE="${CASE_ORPHAN_TREE:-}" \
     STUB_RENDER_GRID="${CASE_RENDER_GRID:-}" \
+    STUB_EVENTS="${CASE_EVENTS:-}" STUB_EVENT_FRAMES="${CASE_EVENT_FRAMES:-}" \
+    STUB_EVENT_SEQ="${CASE_EVENT_SEQ:-900}" \
     CMUX_SOCKET_PATH="$sock" HOME="$CASEDIR/home" \
     HOTLINE_PASTE_CONFIRM_TRIES=3 HOTLINE_PASTE_CONFIRM_SLEEP=0.05 \
     PATH="$CASEDIR/bin:$PATH" bash "$SCRIPT_UNDER_TEST" \
@@ -1358,6 +1387,94 @@ CASE_RESPONSES=""
 [[ "$(request_count)" -eq 0 ]] \
   && pass "…and nothing is pasted while the box is unproven" \
   || fail "…and nothing is pasted while the box is unproven" "$(requests)"
+
+echo ""
+echo "  -- where did the input-box clear actually go? (cmux events) --"
+
+# THE CLEAR IS A REAL INTERRUPT, and it is the only send this script makes. A
+# handle that resolves to the wrong surface therefore does not merely fail to clear
+# our box: it Ctrl-Cs a turn in somebody else's REPL. Nothing errors when that
+# happens — `cmux send` exits 0, a positional `surface:N` ref retargets silently
+# after a tab move or a sibling close, and an empty handle falls through to
+# $CMUX_SURFACE_ID, i.e. the CALLER'S OWN pane. cmux_handle_ok can only refuse a
+# handle that is already empty, in advance; `result.surface_id` on the send's own
+# event is the only place the resolution shows up after the fact.
+#
+# Frames are the shape of a live-harvested surface.input_sent (events.md) — that
+# frame was captured from the incident where an empty handle typed a probe into the
+# user's own prompt, not invented for this suite.
+EV_DIR="$STUBROOT/events"; mkdir -p "$EV_DIR"
+ev_frame() { # <file> <seq> <resolved-surface>
+  printf '{"name":"surface.input_sent","seq":%s,"surface_id":"%s","payload":{"method":"surface.send_text","params":{"text":null,"text_length":1,"redacted_fields":["text"]},"result":{"queued":false,"surface_id":"%s","surface_ref":"surface:1"}}}\n' \
+    "$2" "$3" "$3" >> "$1"
+}
+CLEAR_SCREENS=(screen_idle_parked screen_idle_parked screen_idle_empty screen_pasted_placeholder)
+
+# --- The clear landed where it was meant to: nothing changes. ----------------
+: > "$EV_DIR/ok.ndjson"; ev_frame "$EV_DIR/ok.ndjson" 901 "$SURF_UUID"
+CASE_RESPONSES="$OK_RESPONSES" CASE_EVENTS=1 CASE_EVENT_FRAMES="$EV_DIR/ok.ndjson" \
+  run_case clear_landed "${CLEAR_SCREENS[@]}" -- --prompt "follow up"
+CASE_RESPONSES=""; CASE_EVENTS=""; CASE_EVENT_FRAMES=""
+[[ "$(clear_count)" -ge 1 && "$OUT" == *'"call_dir"'* && "$OUT" != *'"fallback"'* ]] \
+  && pass "a clear that resolved to the intended surface delivers exactly as before" \
+  || fail "a clear that resolved to the intended surface delivers exactly as before" \
+       "out: $OUT log:"$'\n'"$(log_view)"
+
+# --- It landed somewhere else: refuse, and NAME where it went. ---------------
+: > "$EV_DIR/wrong.ndjson"; ev_frame "$EV_DIR/wrong.ndjson" 901 "ffff9999-8888-4888-8888-888888888888"
+CASE_RESPONSES="$OK_RESPONSES" CASE_EVENTS=1 CASE_EVENT_FRAMES="$EV_DIR/wrong.ndjson" \
+  run_case clear_substituted "${CLEAR_SCREENS[@]}" -- --prompt "follow up"
+CASE_RESPONSES=""; CASE_EVENTS=""; CASE_EVENT_FRAMES=""
+[[ "$OUT" == *'"fallback"'* ]] \
+  && pass "a clear delivered to a DIFFERENT surface refuses the reuse" \
+  || fail "a clear delivered to a DIFFERENT surface refuses the reuse" "out: $OUT"
+# Nothing of ours has gone out yet, which is what makes fallback:fresh the safe
+# answer rather than a double-delivery — and the reason has to carry the surface
+# the interrupt actually hit, or the next reader debugs the wrong pane.
+[[ "$(request_count)" -eq 0 ]] \
+  && pass "…and no payload is pasted after a substituted target" \
+  || fail "…and no payload is pasted after a substituted target" "$(requests)"
+[[ "$OUT" == *"ffff9999-8888-4888-8888-888888888888"* ]] \
+  && pass "…and the refusal names the surface the interrupt actually reached" \
+  || fail "…and the refusal names the surface the interrupt actually reached" "out: $OUT"
+
+# --- No send event at all is NOT an accusation. ------------------------------
+# The clear is already `|| true` — the post-clear re-read is what gates the paste —
+# so "the keystroke never left" is a real outcome, and a yes/no landed-check would
+# report it as a substituted target every time. The re-read still decides.
+: > "$EV_DIR/silent.ndjson"
+CASE_RESPONSES="$OK_RESPONSES" CASE_EVENTS=1 CASE_EVENT_FRAMES="$EV_DIR/silent.ndjson" \
+  run_case clear_unobserved "${CLEAR_SCREENS[@]}" -- --prompt "follow up"
+CASE_RESPONSES=""; CASE_EVENTS=""; CASE_EVENT_FRAMES=""
+[[ "$OUT" == *'"call_dir"'* && "$OUT" != *'"fallback"'* ]] \
+  && pass "an unobserved clear is not accused of a substituted target" \
+  || fail "an unobserved clear is not accused of a substituted target" "out: $OUT"
+
+# --- The before-marker scopes it to THIS clear. ------------------------------
+# The retained event buffer REPLAYS, so without the seq taken before the send a
+# previous exchange's send answers for this one — and every reused surface whose
+# last send went elsewhere would be refused on the strength of old history.
+: > "$EV_DIR/stale.ndjson"
+ev_frame "$EV_DIR/stale.ndjson" 850 "ffff9999-8888-4888-8888-888888888888"
+ev_frame "$EV_DIR/stale.ndjson" 901 "$SURF_UUID"
+CASE_RESPONSES="$OK_RESPONSES" CASE_EVENTS=1 CASE_EVENT_FRAMES="$EV_DIR/stale.ndjson" \
+  run_case clear_stale_frame "${CLEAR_SCREENS[@]}" -- --prompt "follow up"
+CASE_RESPONSES=""; CASE_EVENTS=""; CASE_EVENT_FRAMES=""
+[[ "$OUT" == *'"call_dir"'* && "$OUT" != *'"fallback"'* ]] \
+  && pass "a send from BEFORE this clear cannot refuse the reuse" \
+  || fail "a send from BEFORE this clear cannot refuse the reuse" "out: $OUT"
+
+# --- Case. ------------------------------------------------------------------
+# The handle comes out of the session cache and the frame's id out of cmux. A UUID
+# differing only in case would read as a substituted target and refuse every reuse.
+: > "$EV_DIR/case.ndjson"
+ev_frame "$EV_DIR/case.ndjson" 901 "$(printf '%s' "$SURF_UUID" | tr 'a-z' 'A-Z')"
+CASE_RESPONSES="$OK_RESPONSES" CASE_EVENTS=1 CASE_EVENT_FRAMES="$EV_DIR/case.ndjson" \
+  run_case clear_case_fold "${CLEAR_SCREENS[@]}" -- --prompt "follow up"
+CASE_RESPONSES=""; CASE_EVENTS=""; CASE_EVENT_FRAMES=""
+[[ "$OUT" == *'"call_dir"'* && "$OUT" != *'"fallback"'* ]] \
+  && pass "the same surface in another case is not a substituted target" \
+  || fail "the same surface in another case is not a substituted target" "out: $OUT"
 
 echo ""
 if [[ -s "$POISON_LOG" ]]; then

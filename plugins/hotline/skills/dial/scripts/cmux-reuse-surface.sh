@@ -322,8 +322,55 @@ chmod 600 "$PAYLOAD_FILE" 2>/dev/null || true
 # check: a Ctrl-C that empties the box lets Claude Code draw a placeholder into it,
 # and reading that as "still dirty" would refuse a clear that in fact worked.
 if $NEEDS_CLEAR; then
+  # WHERE DID THAT INTERRUPT ACTUALLY GO? This is the only send in this script, and
+  # it is a real Ctrl-C — so a handle that resolves to the wrong surface does not
+  # just fail to clear our box, it interrupts a turn in somebody else's. A
+  # positional `surface:N` ref (still accepted, for caches written by older plugin
+  # versions) retargets silently after a tab move or a sibling close, and an empty
+  # or unresolvable handle falls through to $CMUX_SURFACE_ID — the CALLER'S OWN
+  # pane. None of that errors: `cmux send` exits 0 either way, and cmux_handle_ok
+  # can only refuse a handle that is already empty, in advance.
+  #
+  # `result.surface_id` on the send's own event is the one place the resolution
+  # shows up, so the marker is taken BEFORE the send — the retained event buffer
+  # REPLAYS, and without it a previous exchange's send would answer for this one.
+  CLEAR_SEQ=""
+  CLEAR_INTENDED="${GHOST_SURF:-}"
+  # The ghost check above resolves the address only when it ran; a handle that is
+  # already a UUID needs no resolving, and is the shape every current cache writes.
+  if [[ -z "$CLEAR_INTENDED" && "$SURFACE_REF" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    CLEAR_INTENDED="$SURFACE_REF"
+  fi
+  [[ -n "$CLEAR_INTENDED" ]] && CLEAR_SEQ=$(cmux_events_seq 2>/dev/null || true)
+
   cmux_send_live "input-box clear on surface $SURFACE_REF" --surface "$SURFACE_REF" $'\003' \
     >/dev/null 2>&1 || true
+
+  # cmux_last_send_target, not cmux_send_landed_on, and the difference matters:
+  # this send is already `|| true`, because the post-clear re-read is what gates
+  # the paste. So "no send event at all" is a REAL outcome here (the keystroke
+  # never left), and it is not the same thing as "landed somewhere else". A
+  # yes/no landed-check cannot tell them apart and would accuse the transport of
+  # a substituted target every time the send simply failed. Asking where it went
+  # answers the verdict and the diagnostic in one call: empty means unobserved
+  # (fall through to the re-read, which refuses a box that is still dirty), and a
+  # different surface is the substitution itself, named.
+  #
+  # Case-folded: the handle comes from the session cache and the frame's id from
+  # cmux, and a UUID differing only in case would read as a substituted target.
+  if [[ -n "$CLEAR_SEQ" ]]; then
+    CLEAR_LANDED=$(HOTLINE_EVENTS_AFTER="$CLEAR_SEQ" cmux_last_send_target 3 2>/dev/null || true)
+    if [[ -n "$CLEAR_LANDED" ]] \
+       && [[ "$(printf '%s' "$CLEAR_LANDED" | tr 'A-Z' 'a-z')" \
+             != "$(printf '%s' "$CLEAR_INTENDED" | tr 'A-Z' 'a-z')" ]]; then
+      # Nothing of OURS has been pasted, so a fresh surface is still safe — but the
+      # interrupt has already gone somewhere it should not have, and that belongs in
+      # the reason rather than in nobody's log.
+      rm -rf "$CALL_DIR"
+      fallback_fresh "the input-box clear meant for surface $SURFACE_REF (${CLEAR_INTENDED}) was delivered to surface $CLEAR_LANDED instead — the handle resolved to a different surface, so a Ctrl-C reached a REPL that is not the callee's and nothing was pasted; re-resolve the surface before reusing it"
+    fi
+  fi
+
   sleep 0.4
   if ! SCREEN3=$(read_live) \
      || { [[ -n "$(input_box_content "$SCREEN3")" ]] && ! box_is_ghost_placeholder; }; then
