@@ -143,12 +143,13 @@ viewport. `.retried_enter: true` means the paste's own submit key was dropped an
 corrective Enter submitted it — the delivery is good, but a run of them is worth
 reporting.
 
-`.submit_frames` counts the turns the payload landed as. One is a clean delivery.
-**Above one means the callee received the work order split across several turns** —
-still delivered, and `.confirmed` says so, but the callee read it in pieces, which is
-worth reporting and never a reason to re-dial (that would run the order twice). The
-field is absent, rather than 0, wherever the count could not be taken: a cmux with no
-event stream, a herdr callee, or a first contact.
+`.submit_frames` counts the turns the payload landed as. **Above one means the callee
+received the work order split across several turns** — still delivered, and
+`.confirmed` says so, but the callee read it in pieces, which is worth reporting and
+never a reason to re-dial (that would run the order twice). It is a floor rather than
+a tally: a queued paste is counted when the queue flushes, so 1 is not itself proof of
+a single clean turn. The field is absent, rather than 0, wherever the count could not
+be taken: a cmux with no event stream, a herdr callee, or a first contact.
 
 `transport` means the backend the caller asked for is not usable here — herdr is not
 installed, or no herdr server answered. **It is never a degradation**: an explicit

@@ -406,10 +406,18 @@ cmux_submit_lengths() {
 # tool_input_length warning on that event is about its LENGTH, which this does
 # not read.
 #
-# It fires when claude INGESTS the prompt, not when the box accepts it, so a
-# paste QUEUED behind a live turn is counted when the queue flushes — possibly
-# after this window closes. That direction is an undercount: a caller sees 1 (or
-# 0) where more are pending, never a fragmentation alarm for a clean delivery.
+# THE COUNT IS A FLOOR, NOT A TALLY, and two separate mechanisms make it one:
+#   • It fires when claude INGESTS the prompt, not when the box accepts it, so a
+#     paste QUEUED behind a live turn is counted when the queue flushes — possibly
+#     after this window closes.
+#   • A `--after <seq> --limit <n>` replay does not reach the newest frames
+#     (events.md, "A replay window does not reach the newest frames"), so a frame
+#     landing between the caller's marker and this query can fall in that gap. The
+#     live half of the window still delivers anything that arrives while it is
+#     open, which is where a paste's own frames normally come from.
+# Both err the same way — a caller sees fewer turns than happened, never more — so
+# a count above 1 is real fragmentation and a count of 1 is not proof of a clean
+# single turn. Read it as "at least this many".
 #
 # Case-insensitive on the surface id: the handle a caller holds comes from the
 # cmux tree and the frame's comes from the hook bridge, and a UUID that differs
