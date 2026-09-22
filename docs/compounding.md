@@ -418,6 +418,17 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   withhold from the environment whatever the code is meant to read from a file.
   (claude-plugins-7wze.8, 2a4cc64)
 
+  A fourth dimension is the fixture's TOPOLOGY — how the subject sits relative to
+  everything else. A hotline callee in a DETACHED placement gets its own cmux
+  workspace, so counting a callee's submitted turns by `workspace_id` and counting
+  them by `session_id`+`surface_id` return the same answer there; on the DEFAULT
+  side placement, where caller and callee share one workspace, the workspace-scoped
+  count returns 2 for a clean single-turn delivery. Measured on two real dials, and
+  the reason a smoke that exercises only the isolating topology can bless a scoping
+  that is wrong everywhere else: put the subject in the CROWDED topology, and pin
+  the disagreement between the right and the cheap implementation as its own case
+  (`events-primitives_test.sh` § 7c). (claude-plugins-056z, f302a5c)
+
   The third dimension is the stub's LIFETIME. A stub that has already exited cannot
   exhibit a hazard that only exists while the real program is still running: one that
   `cat`s a finished file can never hold a reader up or take a SIGPIPE, and one that

@@ -381,6 +381,11 @@ cmux_wait_session_turn_end() {
 # and a side-by-side hotline call puts the caller's REPL and the callee's in ONE
 # workspace (measured: one workspace_id hosting two session_ids on two
 # surface_ids). Counting turns for a specific callee is cmux_prompt_ingests.
+#
+# AND A DETACHED CALLEE HIDES THAT. Detached placement gives the callee its own
+# workspace, so this count and cmux_prompt_ingests agree there — measured on two
+# real dials, 1/1 detached against 1/2 side. A smoke that only ever dials detached
+# will bless this primitive for a job it cannot do on the default placement.
 cmux_submit_lengths() {
   local ws="$1" timeout="${2:-2}"
   cmux_events_all "$timeout" 10 \

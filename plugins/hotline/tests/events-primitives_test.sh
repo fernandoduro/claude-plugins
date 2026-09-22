@@ -407,6 +407,43 @@ GOT=$(cmux_prompt_ingests "$ING_SURF" "$ING_UUID" 1 | grep -c . || true)
   && pass "a workspace.prompt.submitted cannot satisfy an ingest count" \
   || fail "a workspace.prompt.submitted cannot satisfy an ingest count" "got '$GOT'"
 
+# --- 7c. The two scopings DISAGREE, and that disagreement is the whole point ---
+# THIS CASE EXISTS TO STOP A "SIMPLIFICATION". Measured on two real dials:
+#
+#   placement   cmux_prompt_ingests(surface+session)   cmux_submit_lengths(ws)
+#   detached                    1                                1
+#   side                        1                                2      ← truth is 1
+#
+# A DETACHED callee gets its OWN workspace, so the workspace-scoped count is right
+# BY ACCIDENT there — anyone who tests only detached sees the two agree and
+# concludes the cheaper primitive is fine. On the DEFAULT side placement the caller
+# and callee share one workspace (measured live: one workspace_id over two
+# session_ids on two surface_ids), and then the workspace-scoped count reports
+# fragmentation for a clean delivery.
+#
+# So the fixture below is the SIDE topology, and the assertion is that the two
+# primitives disagree on it. If a future change makes them agree, either the
+# attribution was dropped or the fixture stopped modelling a shared workspace —
+# both of which this case should refuse.
+frames
+ing 83 "$ING_SURF" "$ING_COMPOSITE" completed
+frame "{\"name\":\"workspace.prompt.submitted\",\"seq\":84,\"workspace_id\":\"$WS\",\"payload\":{\"message_length\":240}}"
+# The caller's own REPL, in the SAME workspace, on a different surface + session.
+ing 85 "82F23F19-F2E0-4F95-B616-FBAAD5CF3896" "$OTHER_COMPOSITE" completed
+frame "{\"name\":\"workspace.prompt.submitted\",\"seq\":86,\"workspace_id\":\"$WS\",\"payload\":{\"message_length\":240}}"
+ATTRIBUTED=$(cmux_prompt_ingests "$ING_SURF" "$ING_UUID" 1 | grep -c . || true)
+WS_SCOPED=$(cmux_submit_lengths "$WS" 1 | grep -c . || true)
+[[ "$ATTRIBUTED" == "1" ]] \
+  && pass "shared workspace: the attributed count sees ONE turn (the truth)" \
+  || fail "shared workspace: the attributed count sees ONE turn" "got '$ATTRIBUTED'"
+[[ "$WS_SCOPED" == "2" ]] \
+  && pass "shared workspace: the workspace-scoped count sees TWO — why 3a does not use it" \
+  || fail "shared workspace: the workspace-scoped count sees TWO" "got '$WS_SCOPED'"
+[[ "$ATTRIBUTED" != "$WS_SCOPED" ]] \
+  && pass "the two scopings disagree on a shared workspace, and must keep disagreeing" \
+  || fail "the two scopings disagree on a shared workspace" \
+       "both reported '$ATTRIBUTED' — attribution dropped, or the fixture stopped sharing a workspace"
+
 # --- 8. The substituted-target check -----------------------------------------
 frames
 frame "{\"name\":\"surface.input_sent\",\"seq\":40,\"payload\":{\"params\":{\"text_length\":25},\"result\":{\"surface_id\":\"$SURF\"}}}"

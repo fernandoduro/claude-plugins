@@ -176,6 +176,11 @@ does not read. It fires on claude's ingest rather than the box's accept, so a
 queued paste is counted when the queue flushes — an undercount, never a false
 alarm.
 
+**Do not re-derive this from a detached dial.** A detached callee gets its own
+workspace, so both scopings return 1 there; the shared-workspace failure only
+appears on the default side placement. Measured on two real dials — detached 1/1,
+side 1/2 — and pinned as a disagreement case in `events-primitives_test.sh` § 7c.
+
 Mind the cost: `cmux_events_all` cannot return early, so `cmux_submit_lengths`
 spends its whole settle window (default 2s) on every call, against a ladder that
 confirms in well under a second. Either accept that on the confirm path only, or
