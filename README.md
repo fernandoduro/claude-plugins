@@ -16,7 +16,7 @@ installing.
 
 ### Claude Code
 
-Add the marketplace and install any of its 35 listed plugins:
+Add the marketplace and install any of its 36 listed plugins:
 
 ```bash
 claude plugin marketplace add jtsternberg/claude-plugins
@@ -50,7 +50,7 @@ installation, then mention a skill as `$<plugin>:<skill-name>`; for example,
 
 To install one self-contained repository skill instead of a whole plugin, see
 [standalone Codex skills](docs/codex/standalone-skills.md). For commands,
-updates, catalog scope, and all 36 plugin names, see the
+updates, catalog scope, and all 37 plugin names, see the
 [compatibility guide](docs/compatibility.md).
 
 ---
@@ -59,7 +59,7 @@ updates, catalog scope, and all 36 plugin names, see the
 
 These are selected plugins and workflows. The
 [support matrix](docs/compatibility.md#plugin-support-matrix) is the complete
-36-name inventory and the authority for harness availability.
+37-name inventory and the authority for harness availability.
 
 ### Skills
 
@@ -170,6 +170,13 @@ Skills for creating git commits from staged or unstaged files with AI-generated 
 **Skills:** `commit-staged`, `commit-unstaged`
 
 **Install:** `claude plugin install git-commits@jtsternberg`
+
+#### 🗂️ [herdr-dispatch](plugins/herdr-dispatch)
+Fans a batch of work items out into one [Herdr](https://herdr.dev) tab per item, each running its own Claude session with a self-contained work order. Point it at a screenshot of a PR dashboard, a list of issue links, or a numbered list; it verifies each item, resolves where the work belongs, composes the orders, then waits for your go-ahead before dispatching. Items may carry different verbs — review one PR, address feedback on another, investigate a third.
+
+**Skills:** `dispatching-herdr-sessions`
+
+**Install:** `claude plugin install herdr-dispatch@jtsternberg`
 
 #### 🔀 [pr-workflow](plugins/pr-workflow) — plugin group
 Five single-purpose PR plugins, installable together or one at a time. `pr-workflow`

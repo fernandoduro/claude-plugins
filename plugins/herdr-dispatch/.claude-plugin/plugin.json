@@ -1,0 +1,9 @@
+{
+  "name": "herdr-dispatch",
+  "description": "Fan a batch of work items out into one Herdr tab per item, each running its own Claude session with a self-contained work order. Use when handed a screenshot of a PR/issue table, a list of links, or a numbered list and asked for \"a pane for each of these\", \"a tab per PR\", \"fan these out\", or \"one session per item\". Requires Herdr.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Fernando Duro",
+    "url": "https://github.com/fernandoduro"
+  }
+}

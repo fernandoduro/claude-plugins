@@ -1,0 +1,3 @@
+interface:
+  display_name: Dispatching Herdr Sessions
+  short_description: Fan a batch of work items into one Herdr tab and Claude session per item

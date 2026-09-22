@@ -10,7 +10,7 @@ catalogs, so install from the column that matches the client you are using.
 
 The clean probes confirmed that Claude Code and Codex resolve separate catalogs
 and that Codex offers only a subset. The matrix below is the current inventory —
-35 entries in the Claude Code catalog, 36 names across both. Recheck this guide
+36 entries in the Claude Code catalog, 37 names across both. Recheck this guide
 after a client upgrade or a catalog change.
 
 ## Install and invoke
@@ -136,6 +136,7 @@ state, or user configuration. Those constraints are noted in the last column.
 | [gws](../plugins/gws) | Available | Not offered | Requires the Google Workspace CLI and its authentication/setup. |
 | [handoff](../plugins/handoff) | Available | Not offered | Uses local session/Beads context as described by the plugin. |
 | [headline-refiner](../plugins/headline-refiner) | Available | Not offered | No extra platform requirement documented. |
+| [herdr-dispatch](../plugins/herdr-dispatch) | Available | Available | Requires [Herdr](https://herdr.dev); the skill refuses to run outside a Herdr-managed pane. Needs `jq`. |
 | [hotline](../plugins/hotline) | Available | Available | Codex can place calls; the current launch transport starts Claude Code receivers. `cmux` is optional/preferred on macOS; calls need reachable local workspaces and a working Claude launcher. |
 | [localwp-shell](../plugins/localwp-shell) | Available | Not offered | macOS only; requires LocalWP and its local shell tooling. |
 | [mac-caffeinate](../plugins/mac-caffeinate) | Available | Not offered | macOS only; uses the system `caffeinate` utility. |

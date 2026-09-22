@@ -294,6 +294,14 @@
       "category": "Coding"
     },
     {
+      "name": "herdr-dispatch",
+      "source": {
+        "source": "local",
+        "path": "./plugins/herdr-dispatch"
+      },
+      "category": "Coding"
+    },
+    {
       "name": "codex",
       "source": {
         "source": "local",
