@@ -202,5 +202,10 @@ your first account.
 **Browser doesn't open:** The script captures the OAuth URL and opens it
 automatically with `open` (macOS) or `xdg-open` (Linux). If neither works,
 the URL is printed to stderr for manual opening.
-**Account exists error:** To re-authenticate an existing account, remove its
-directory at `~/.config/gws-accounts/<label>/` and add it again.
+**Re-authenticating an account** (`invalid_grant` / `invalid_rapt` /
+"Authentication expired"): re-run `gws auth login` for that account — switch to
+it first with `account-switch.sh <label>`, or target it directly with
+`GOOGLE_WORKSPACE_CLI_CONFIG_DIR=~/.config/gws-accounts/<label> gws auth login`.
+Don't delete the account directory; re-auth writes fresh tokens in place. (An
+"account exists" error means you tried to `add` a label that's already
+configured — you don't need `add` to re-authenticate.)
