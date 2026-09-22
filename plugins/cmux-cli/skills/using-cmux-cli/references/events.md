@@ -67,6 +67,26 @@ Harvested live from replays on cmux 0.64.25. **The retained buffer is a rolling 
 | `feed` | `feed.item.received`, `feed.item.completed` |
 | `sidebar` | `sidebar.metadata.updated` |
 
+### Observed, shape not yet captured
+
+<!-- tripwire: claude-plugins-6r0d — capture a real frame for each of these, then move them into the table above and delete this section. Do not guess a shape. -->
+
+`agent.hook.AskUserQuestion` and `surface.action` are real — the catalog guard saw
+both on cmux 0.64.25 — and their payloads are **not** documented here, because the
+rolling buffer had dropped them before either could be read. They are listed so the
+catalog is honest about the event surface, not because anything is known about their
+contents. Do not guess a shape for them; capture one the next time either appears:
+
+```bash
+cmux events --name agent.hook.AskUserQuestion --name surface.action \
+            --after 0 --no-ack --no-heartbeat --limit 900 --timeout 10 2>/dev/null | jq
+```
+
+`agent.hook.AskUserQuestion` is presumably the hook pair for Claude Code's
+question tool, and so presumably carries the same `phase` double-fire and
+`session_id` / `cwd` fields as every other `agent.hook.*` — presumably, which is
+exactly why it is in this section and not in the table above.
+
 ## Frame shape and how to target one surface
 
 Every frame carries `seq`, `occurred_at`, `category`, `name`, `source`, and
