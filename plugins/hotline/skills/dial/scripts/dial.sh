@@ -30,6 +30,7 @@
 #           [--transport cmux|herdr|headless] [--remote <ssh-target>]
 #           [--headless] [--tools <list>]
 #           [--resume <session-id> [--no-fork]] [--fresh]
+#   (a session id as <reference> continues that conversation; --no-fork applies)
 #           [--caller-session <id>] [--refresh-identity]
 #           [--boot-timeout <seconds>] --label <text>
 #
@@ -62,11 +63,16 @@
 # Nothing else distinguishes two callees dialled into one repo. A missing or
 # empty/whitespace-only value is an args error.
 #
-# --resume <session-id> adopts an EXISTING conversation. A session id in --target
-# only resolves the WORKSPACE its transcript lives in, so the callee that lands
-# there has none of that session's context: a question about what it said or did
-# needs --resume too. It forks by default, so hotline protocol noise stays out of
-# the original transcript; --no-fork contributes to it instead.
+# A SESSION ID IN --target CONTINUES THAT CONVERSATION. The id already names its
+# workspace, so it is read as the conversation rather than as a directory handle:
+# the callee resumes it, forked by default. To start a fresh callee in that repo
+# instead, pass the WORKSPACE — there is no flag for it, because the workspace IS
+# the way to say it.
+#
+# --resume <session-id> is the same request made explicitly, and is still how you
+# continue a session that is not the target. It forks by default, so hotline
+# protocol noise stays out of the original transcript; --no-fork contributes to it
+# instead.
 #
 # --fresh ignores this caller's cached session AND cached surface for the resolved
 # target, so the dial opens a BRAND-NEW callee session instead of resuming the one
@@ -74,7 +80,8 @@
 # previous phase's context (a "reviewer" that would otherwise be the implementer
 # resumed). The cache is rewritten to the new session, and the surface this dial
 # supersedes goes through the same proofs and guards a follow-up's would.
-# Contradicts --resume, which names a specific session to continue.
+# It contradicts any request to continue a specific conversation, so it is refused
+# alongside --resume AND alongside a session id in --target.
 #
 # Statuses / exit codes (stdout is ALWAYS a single JSON object):
 #   connected            0   call is live; wait for the response separately
@@ -387,6 +394,35 @@ if [[ -n "$REMOTE_TARGET" ]]; then
   fi
 fi
 
+# --- A session ID in --target IS a request to continue that conversation ------
+# Handing hotline a session id and getting a callee that has never seen that
+# conversation is not a usable reading of the request: the id already names its
+# workspace, so a caller who wanted the workspace alone would have passed the
+# workspace. So the id implies --resume, and everything below it — fork-by-default,
+# the --fresh contradiction, the herdr refusal — applies exactly as it does to an
+# explicit --resume, because at this point the two are the same request.
+#
+# There is deliberately NO opt-out flag. "Resolve this session id to its workspace
+# and start a fresh callee there" is spelled by passing the workspace.
+#
+# THE SAME REGEX resolve-workspace.sh uses, lowercase-only and not by accident: it
+# is what decides whether that script takes the session-id reverse lookup or treats
+# the value as a path. A looser match here would make dial.sh call something a
+# session that resolve-workspace.sh resolves as a directory, and the two would
+# disagree about what was even dialed.
+#
+# ONE CONSEQUENCE WORTH KNOWING: a session-id target does not take the follow-up
+# path. Step 4's cache lookup runs only when no resume was asked for, so dialing
+# the same session id twice forks it twice rather than continuing one callee.
+# Dial the WORKSPACE to hold a conversation with a callee; dial a SESSION ID to
+# branch from a conversation.
+HOTLINE_SESSION_UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+TARGET_IS_SESSION=false
+if [[ -z "$RESUME_ARG" && "$TARGET_REF" =~ $HOTLINE_SESSION_UUID_RE ]]; then
+  RESUME_ARG="$TARGET_REF"
+  TARGET_IS_SESSION=true
+fi
+
 # --- Transport request, validated BEFORE anything has a side effect ----------
 # Every refusal here is a REFUSAL, not a downgrade. `--transport herdr` is an
 # explicit ask for a specific hosting model, and the combinations below are not
@@ -434,6 +470,14 @@ case "$TRANSPORT_REQ" in
     # different thing and needs no flag (the cache holds the agent name); this
     # refusal is about adopting a session hotline did not start.
     if [[ -n "$RESUME_ARG" ]]; then
+      # Named by what the CALLER typed. A session id in --target carries the same
+      # request as --resume, and a refusal that talks about a flag they never passed
+      # reads as a bug in hotline rather than as a choice they can act on.
+      if $TARGET_IS_SESSION; then
+        emit_error args \
+          "--transport herdr cannot adopt an existing session, and a session id in --target is one" \
+          "A session id in --target means 'continue that conversation', which is what herdr cannot do: it hosts a callee it STARTS, with a session id hotline presets so the transcript is readable, and \`claude --resume\` cannot take that preset. Either drop --transport and continue the session over cmux, or pass the WORKSPACE instead of the session id to get a fresh herdr callee in that repo."
+      fi
       emit_error args \
         "--transport herdr cannot adopt an existing session (--resume)" \
         "herdr hosts a callee it STARTS, with a session id hotline presets so the transcript is readable; \`claude --resume\` cannot take that preset. To continue a session you dialed before, just re-dial the same target with --transport herdr --detached and no --resume — the cached herdr agent is re-targeted by name. To adopt an unrelated session id, drop --transport and resume over cmux."
@@ -488,7 +532,14 @@ fi
 # Two opposite instructions about which session to talk to. Resolving it either way
 # silently would give the caller the one they did not ask for, and --fresh exists
 # precisely because a silently-resumed session is expensive to notice.
+# REFUSED, not resolved in either direction. The two asks are exactly opposite —
+# "continue that conversation" against "ignore what exists and start new" — and
+# picking a winner would silently discard something the caller typed on purpose.
 if $FRESH && [[ -n "$RESUME_ARG" ]]; then
+  if $TARGET_IS_SESSION; then
+    emit_error args "--fresh contradicts a session id in --target" \
+      "A session id in --target means 'continue that conversation'; --fresh means 'ignore what exists and start a new callee'. Pass the WORKSPACE as --target with --fresh to start new there, or drop --fresh to continue the session."
+  fi
   emit_error args "--fresh and --resume contradict each other" \
     "--fresh means 'start a new callee session'; --resume <id> names one to continue. Pass one or the other."
 fi
