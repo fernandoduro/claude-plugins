@@ -1,7 +1,7 @@
 {
   "name": "walk-through-work-history",
-  "version": "1.1.0",
-  "description": "Explain how work progressed — PR, branch, or project — one page at a time.",
+  "version": "1.2.0",
+  "description": "Explain how work progressed — PR, branch, or project — one page at a time, plus a pre-merge PR review lens.",
   "author": {
     "name": "JT Sternberg",
     "url": "https://github.com/jtsternberg"
@@ -17,7 +17,7 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Walk Through Work History",
-    "shortDescription": "Explain how work progressed — PR, branch, or project — one page at a time.",
+    "shortDescription": "Explain how work progressed — PR, branch, or project — one page at a time, plus a pre-merge PR review lens.",
     "developerName": "JT Sternberg",
     "category": "Developer Tools",
     "capabilities": [

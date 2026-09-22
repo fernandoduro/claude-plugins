@@ -43,9 +43,28 @@ $walk-through-work-history:walk-through-work-history Explain https://github.com/
 
 Although optimized for GitHub PRs, the same method can explain issues, branches, incidents, documents, tickets, and other chronological work records. Google Docs have their own bundled reference: it walks down an access ladder (connected Drive tools, a Workspace CLI, raw Drive REST with any OAuth token, then the browser UI) and is explicit about which parts of a Doc's history the APIs cannot return — comment threads are rich, revision lists are incomplete for busy docs, and accepted suggestions leave no record.
 
+### `pr-merge-review`
+
+A thin GitHub-PR lens on the same walkthrough, for a reader who is about to merge. It operates as if you had invoked `walk-through-work-history` directly on the PR — the same paginated, causal, one-page-per-turn history — with two adjustments: the artifact is always a pull request (no Google Doc / ticket branches), and the risk thread is folded into the story (raised → how addressed → what's still open), ending on a forward-looking final page that lays out the next steps toward merging, or suggests it's ready. Install this plugin and both skills are available.
+
+The lens is built into the skill — just hand it the PR. You don't repeat "how it works, tradeoffs, risks to merge, one page at a time"; that framing is what the skill already applies.
+
+Claude Code:
+
+```text
+/walk-through-work-history:pr-merge-review https://github.com/org/repo/pull/123
+```
+
+Codex invocation:
+
+```text
+$walk-through-work-history:pr-merge-review https://github.com/org/repo/pull/123
+```
+
 ## Additional Documentation
 
 - [skills/walk-through-work-history/SKILL.md](skills/walk-through-work-history/SKILL.md) - Paginated work-history walkthrough
+- [skills/pr-merge-review/SKILL.md](skills/pr-merge-review/SKILL.md) - Pre-merge PR review lens over the walkthrough
 - [skills/walk-through-work-history/references/github-pr.md](skills/walk-through-work-history/references/github-pr.md) - Collecting a pull request's full record
 - [skills/walk-through-work-history/references/google-doc.md](skills/walk-through-work-history/references/google-doc.md) - Collecting a Google Doc's revisions, comments, and activity
 
