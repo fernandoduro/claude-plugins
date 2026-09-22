@@ -230,7 +230,13 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   `set -euo pipefail` turns that into an exit before any output — so a script that
   meant to *degrade* to a fallback aborts the whole call instead, silently and with
   no diagnostic. Every cmux surface opener resolves ref→UUID this way: append
-  `|| true` and let the fallback below it run. Guarded by
+  `|| true` so the fallback below it can run — and make that fallback a loud
+  non-zero exit, never a null in a field callers read as a handle. Degrading to
+  `"surface_id": null` reported as success is *worse* than the abort it replaced:
+  `open-side-surface.sh --json` answered all four ids null for a completely healthy
+  surface, and that null is the documented first step of a payload typed into the
+  caller's own input box. A fresh surface is also not instantly enumerable, so
+  retry the lookup before concluding anything. Guarded by
   `plugins/cmux-cli/tests/side-surface-scope_test.sh`'s unresolvable-echoed-ref case
   and `cmux_close_surface_scoped`'s in `plugins/hotline/tests/`.
   **This entry named two sites and only one was fixed**, for months: cmux echoes an
@@ -239,7 +245,7 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   every cmux-transport hotline dial with it and orphaning a surface per attempt. An
   entry that names N sites is a liability until all N are changed — fix them in the
   same change-set, or name the unfixed one as its own bead.
-  (claude-plugins-h2et, -99nu)
+  (claude-plugins-h2et, -99nu, 81e0a4e)
 - **A wrapped CLI's chatter stays out of every captured JSON.** `gws` prints
   "Using keyring backend" to stderr and hotline hit the same class from stdout, so
   a `2>&1` capture yields a file that looks fine and fails every parse downstream.

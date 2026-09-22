@@ -104,6 +104,8 @@ Guard both ends — validate before, verify after:
 
 In a shell script, don't hand-roll the check a fourth time: `cmux_handle_ok <what> <handle>` in `plugins/hotline/scripts/repl-state.sh` is the guard this repo already uses for it.
 
+`open-side-surface.sh` will not hand you a null id at all: it retries the ref→UUID lookup (a fresh surface is not instantly enumerable) and, if it still cannot name what it created, exits **4** with a diagnostic and no JSON rather than reporting nulls as success. Keep the guard above anyway — `identify` and a hand-rolled tree read can each still answer `null`.
+
 **Which surface it substitutes depends on the path.** `cmux send` and the other CLI verbs default their `--surface`/`--workspace` to the `$CMUX_*_ID` env vars, so an empty handle lands on **the caller's own surface**. A malformed `cmux rpc` call — camelCase param keys, which are silently dropped — instead resolves against the **focused** surface and returns `ok:true` carrying somebody else's grid. Either way the call succeeds and the target is not the one you named, which is why the verification is `result.surface_id`, not the exit code.
 
 ### Destructive and bulk operations: resolve UUIDs up front

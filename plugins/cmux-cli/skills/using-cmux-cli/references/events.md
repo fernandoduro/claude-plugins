@@ -59,7 +59,7 @@ Harvested live from replays on cmux 0.64.25. **The retained buffer is a rolling 
 | category | names |
 |---|---|
 | `agent` | `agent.hook.SessionStart`, `agent.hook.UserPromptSubmit`, `agent.hook.PreToolUse`, `agent.hook.Stop`, `agent.hook.SubagentStop`, `agent.hook.SessionEnd`, `agent.hook.Notification`, `agent.notification.decision`, `agent.journal.unattributed` |
-| `surface` | `surface.created`, `surface.selected`, `surface.focused`, `surface.closed`, `surface.input_sent`, `surface.key_sent` |
+| `surface` | `surface.created`, `surface.selected`, `surface.focused`, `surface.closed`, `surface.moved`, `surface.input_sent`, `surface.key_sent` |
 | `workspace` | `workspace.created`, `workspace.selected`, `workspace.closed`, `workspace.reordered`, `workspace.prompt.submitted` |
 | `pane` | `pane.created`, `pane.focused` |
 | `window` | `window.created`, `window.keyed`, `window.unkeyed` |
@@ -219,6 +219,32 @@ So a full submit into a REPL leaves three frames — `surface.input_sent` for th
 `surface.key_sent` for the Enter, then `workspace.prompt.submitted` when the REPL
 actually accepts it. Missing the third with the first two present is precisely the
 "delivered but never submitted" case.
+
+### `surface.moved` is how a positional ref stops meaning what it meant
+
+A surface moving between panes is what renumbers the `surface:N` / `pane:N` slots
+every other snapshot was read against, so this frame is the observable behind
+"refs renumber between the snapshot and the call". It carries the same two-sided
+shape as the send frames — `params` is what the caller passed, `result` is what
+cmux resolved:
+
+```json
+{"name":"surface.moved","seq":18364,"source":"socket.v2",
+ "surface_id":"4089FEEB-…","pane_id":"7FDF0314-…","workspace_id":"F6D3065C-…",
+ "payload":{"method":"surface.move",
+            "params":{"index":0,"pane_id":"pane:26","surface_id":"surface:61",
+                      "workspace_id":"workspace:12"},
+            "result":{"pane_id":"7FDF0314-…","pane_ref":"pane:26",
+                      "surface_id":"4089FEEB-…","surface_ref":"surface:61",
+                      "window_id":"AD03B5BA-…","window_ref":"window:2",
+                      "workspace_id":"F6D3065C-…","workspace_ref":"workspace:12"}}}
+```
+
+The surface's `pane_id` and `workspace_id` are what change, so a handle cached as
+`surface:61` may now sit in a different pane and workspace — which matters because
+`cmux` scopes pane and surface calls *inside* a workspace context. Re-resolve a
+cached ref against a fresh tree after one of these, and prefer the UUID, which a
+move does not change.
 
 ### Trap: an empty or unresolved handle silently targets *you*
 
