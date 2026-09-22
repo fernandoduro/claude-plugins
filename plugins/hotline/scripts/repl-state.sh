@@ -26,19 +26,272 @@
 # =============================================================================
 
 # --- Addressing a cmux surface: never let cmux choose one for us ---------------
-# cmux resolves a MISSING or unparseable target to the FOCUSED surface instead of
-# refusing the call. Three incidents on 2026-08-26 came out of that one rule:
-# `cmux send --surface ""` typed probe text into a bystander's live REPL (twice),
-# and a `terminal.replay` whose params used camelCase keys returned ok:true
-# carrying the FOCUSED surface's grid (claude-plugins-r465.9). So an empty handle
-# never means "no target" here — it means "whatever the user is looking at".
+# cmux substitutes a target for a missing or unparseable one instead of refusing
+# the call, and WHICH one it substitutes depends on the path. Both readings are
+# live, and they point at different surfaces:
+#
+#   A CLI verb falls back to the inherited `$CMUX_*_ID` env vars, so
+#   `cmux send --surface ""` lands on THE CALLER'S OWN surface. Four incidents:
+#   three typed probe text into a bystander's live REPL (2026-08-26), one into
+#   the operator's own input box mid-conversation (2026-09-21, confirmed by a
+#   `surface.input_sent` frame whose `result.surface_id` was the caller's).
+#
+#   A malformed `cmux rpc` — camelCase param keys, silently dropped — resolves
+#   against the FOCUSED surface and returns ok:true carrying its grid
+#   (claude-plugins-r465.9).
+#
+# So an empty handle never means "no target". Which wrong surface it means decides
+# where to look when one slips through, and for the CLI verbs every dial script
+# uses, the answer is "check your own pane first" — not the user's focused one.
 #
 # cmux_handle_ok <what> <handle> — 0 when the handle is safe to address.
 cmux_handle_ok() {
   [[ -n "${2:-}" ]] && return 0
-  printf 'hotline: refusing a cmux call for %s — its target handle is empty, and cmux resolves a missing target to the FOCUSED surface rather than failing (claude-plugins-r465.9).\n' \
+  printf 'hotline: refusing a cmux call for %s — its target handle is empty, and a cmux CLI verb falls back to the inherited $CMUX_*_ID rather than failing, delivering to THIS pane (claude-plugins-r465.9, -99nu).\n' \
     "${1:-<unnamed call>}" >&2
   return 1
+}
+
+# --- cmux events: facts about what cmux did, not inferences from a TUI --------
+# `cmux events` (cmux >= 0.64.25) streams retained NDJSON for surfaces opening,
+# prompts submitting, and agent turns starting and ending. Every question the
+# screen-reading predicates below ANSWER BY INFERENCE, this answers by
+# measurement — so reach for these first and treat the screen reads as the
+# documented fallback for a cmux that predates the stream, or for no cmux at all.
+# The catalog, payload shapes and traps live in
+# plugins/cmux-cli/skills/using-cmux-cli/references/events.md; that file is the
+# verified contract and this section is its binding, not a second source.
+#
+# Five traps are handled here so no caller has to remember them:
+#
+#   1. The ack frame goes to STDOUT and carries no `.name`, and the timeout
+#      message goes to STDERR. Both break a naive jq filter, so every invocation
+#      is `--no-ack --no-heartbeat 2>/dev/null`.
+#   2. `--limit` counts FRAMES, not matches. When a jq filter does the narrowing,
+#      bound the wait with `--timeout` and stop at the first match instead.
+#   2b. The `--name` narrowing is cmux's, server-side. The query builders below
+#      ALSO check `.name` client-side, so a filter can never be satisfied by a
+#      frame of some other name — which is what makes these waiters testable
+#      against a stub that does not reimplement cmux's filtering, and what keeps
+#      a future `--name` regression from turning a turn-end wait into a
+#      session-start match.
+#   3. Stopping reading does NOT stop cmux. It holds the stream open for its
+#      whole --timeout, so a naive `| head -1` costs the full window however
+#      early the frame arrived — measured, and the reason cmux_events_first
+#      kills the producer itself rather than closing a pipe at it.
+#   4. `agent.hook.*` fires TWICE per occurrence — `payload.phase` is "received"
+#      then "completed". Undeduplicated, every turn counts double.
+#   5. A frame's top-level `surface_id` can be null on some `agent.hook.*` frames,
+#      where a `select(.surface_id == $s)` filter drops them silently. The waiters
+#      that can fall back to `payload.cwd` / `payload.workspace_id` do.
+#
+# The retained buffer is a ROLLING WINDOW. A name's absence from a replay means
+# "nothing did that recently", never "this event does not exist" — so an empty
+# result is never evidence that a capability is missing.
+
+# cmux_events_supported — 0 when this cmux can answer event queries.
+# Probed once per process via --snapshot (which prints the ack and exits), then
+# cached: the screen-reading fallbacks exist for the "no" answer, and a
+# per-call probe would tax every one of them. HOTLINE_CMUX_EVENTS=0|1 forces the
+# answer, which is how the suites drive both paths without a real cmux.
+HOTLINE_CMUX_EVENTS_CACHE=""
+cmux_events_supported() {
+  if [[ -n "${HOTLINE_CMUX_EVENTS:-}" ]]; then
+    [[ "$HOTLINE_CMUX_EVENTS" == "1" ]] && return 0
+    return 1
+  fi
+  [[ -n "$HOTLINE_CMUX_EVENTS_CACHE" ]] && return "$HOTLINE_CMUX_EVENTS_CACHE"
+  if cmux events --snapshot --no-ack --no-heartbeat >/dev/null 2>&1 \
+     || cmux events --snapshot >/dev/null 2>&1; then
+    HOTLINE_CMUX_EVENTS_CACHE=0
+  else
+    HOTLINE_CMUX_EVENTS_CACHE=1
+  fi
+  return "$HOTLINE_CMUX_EVENTS_CACHE"
+}
+
+# cmux_events_seq — the latest retained seq, as a BEFORE marker.
+# Capture this before a send, then pass it as --after so the query sees only
+# frames caused by that send. Empty on any failure; a caller that got nothing
+# must not fall back to --after 0, which would replay unrelated history.
+cmux_events_seq() {
+  cmux_events_supported || return 1
+  local seq
+  seq=$(cmux events --snapshot --no-ack --no-heartbeat 2>/dev/null \
+        | jq -r '.resume.latest_seq // empty' 2>/dev/null) || true
+  [[ -n "$seq" && "$seq" != "null" ]] || return 1
+  printf '%s' "$seq"
+}
+
+# cmux_events_first <timeout> <jq-filter> <name>... — first matching frame.
+# Prints the frame as compact JSON and returns 0, or returns 1 on no match.
+# $HOTLINE_EVENTS_AFTER, when set, scopes the query to frames after that seq.
+#
+# RETURNS AS SOON AS THE FRAME ARRIVES, which took three tries to actually get:
+#
+#   `cmux events … | jq … | head -1` does NOT return early. `head` exiting only
+#   SIGPIPEs jq on jq's NEXT write, and jq has nothing more to write — so jq
+#   drains the rest of the window and the wait costs the full --timeout no
+#   matter when the frame landed. A 600s turn-end wait would sit 600s on a Stop
+#   that arrived in 2s, making every migrated waiter SLOWER than the read-screen
+#   poll it replaced. Measured: 6s of a 6s window for a frame delivered at 0s.
+#
+#   `jq -n 'first(inputs|…)'` does exit on the first match, but a command
+#   substitution waits for every process in the pipeline, and cmux holds the
+#   stream open for its whole window without writing (we pass --no-heartbeat),
+#   so it never notices the closed pipe. Also 6s.
+#
+# So the reader has to terminate the producer itself: cmux writes into a FIFO in
+# the background, `jq -n first(...)` exits on the match, and we kill cmux. The
+# kill is not tidiness — process substitution measured the same 0s but left a
+# `cmux events --timeout 600` orphan per wait, and orphaned stream readers are a
+# leak this transport already guards against elsewhere.
+cmux_events_first() {
+  cmux_events_supported || return 1
+  local timeout="$1" filter="$2"; shift 2
+  local -a names=()
+  local n; for n in "$@"; do names+=(--name "$n"); done
+  local -a after=()
+  [[ -n "${HOTLINE_EVENTS_AFTER:-}" ]] && after=(--after "$HOTLINE_EVENTS_AFTER")
+  local nameset
+  nameset=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
+
+  # macOS hands out a TMPDIR with a trailing slash, which mktemp templates into a
+  # double-slashed path; the suites normalize for the same reason.
+  local tmproot="${TMPDIR:-/tmp}"; tmproot="${tmproot%/}"
+  local fifo
+  fifo=$(mktemp -u "$tmproot/hotline-events.XXXXXX") || return 1
+  mkfifo "$fifo" 2>/dev/null || return 1
+
+  cmux events "${names[@]}" "${after[@]}" \
+              --timeout "$timeout" --no-ack --no-heartbeat >"$fifo" 2>/dev/null &
+  local cpid=$!
+
+  local out
+  out=$(jq -c -n --argjson want "$nameset" \
+          "first(inputs | select((.name // \"\") as \$n | \$want | index(\$n)) | $filter)" \
+          <"$fifo" 2>/dev/null) || true
+
+  kill "$cpid" 2>/dev/null || true
+  wait "$cpid" 2>/dev/null || true
+  rm -f "$fifo" 2>/dev/null || true
+
+  [[ -n "$out" && "$out" != "null" ]] || return 1
+  printf '%s' "$out"
+}
+
+# cmux_events_all <timeout> <limit> <jq-filter> <name>... — every match in window.
+# For the questions where the COUNT is the answer: two
+# `workspace.prompt.submitted` frames for one send is fragmentation, not a
+# clean submit. One frame per line on stdout; returns 1 when there were none.
+#
+# UNLIKE cmux_events_first, THIS ALWAYS COSTS THE FULL <timeout>. It cannot
+# return early — "were there more frames after the first?" is only answerable by
+# waiting. So the timeout is a settle window to be budgeted, not an upper bound
+# that a fast answer escapes. Callers that need a fast yes and a slower
+# how-many should ask cmux_events_first for the yes and come back here for the
+# count.
+cmux_events_all() {
+  cmux_events_supported || return 1
+  local timeout="$1" limit="$2" filter="$3"; shift 3
+  local -a names=()
+  local n; for n in "$@"; do names+=(--name "$n"); done
+  local -a after=()
+  [[ -n "${HOTLINE_EVENTS_AFTER:-}" ]] && after=(--after "$HOTLINE_EVENTS_AFTER")
+  local nameset
+  nameset=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
+  local out
+  out=$(
+    cmux events "${names[@]}" "${after[@]}" --limit "$limit" \
+                --timeout "$timeout" --no-ack --no-heartbeat 2>/dev/null \
+      | jq -c --argjson want "$nameset" \
+          "select((.name // \"\") as \$n | \$want | index(\$n)) | $filter" 2>/dev/null
+  ) || true
+  [[ -n "$out" ]] || return 1
+  printf '%s\n' "$out"
+}
+
+# --- Purpose-built waiters ----------------------------------------------------
+
+# cmux_wait_surface_created <pane_id> <timeout> — the surface EXISTS.
+# It does NOT mean the PTY is attached: a `cmux send` is what attaches it, so the
+# readiness probe in surface-ready.sh still has to run after this returns.
+cmux_wait_surface_created() {
+  local pane="$1" timeout="${2:-30}"
+  cmux_events_first "$timeout" \
+    "select(.pane_id == \"$pane\")" surface.created
+}
+
+# cmux_wait_session_start <cwd> <timeout> [expect_session_id]
+#   — prints the callee's claude session_id once its REPL has booted.
+#
+# Matches on payload.cwd because this signal can arrive before we know which
+# surface the session landed in; mapping a session id onto a surface is what the
+# rest of its payload is for.
+#
+# PASS THE EXPECTED SESSION ID WHENEVER ONE IS KNOWN. A cwd is not unique to a
+# call: the operator's own claude session running in the same directory emits an
+# identical-looking SessionStart, and a cwd-only match would promote a boot that
+# is not ours. Callers that launched with a preset `--session-id` know exactly
+# which id to expect, so the match becomes exact — and the frame then CONFIRMS
+# the preset instead of the caller having to assume claude honoured it, which
+# nothing verified before.
+cmux_wait_session_start() {
+  local cwd="$1" timeout="${2:-120}" expect="${3:-}"
+  local idsel=""
+  [[ -n "$expect" ]] && idsel=" and (.payload.session_id // \"\") == \"$expect\""
+  local frame
+  frame=$(cmux_events_first "$timeout" \
+    "select(.payload.phase == \"completed\" and (.payload.cwd // \"\") == \"$cwd\"$idsel)" \
+    agent.hook.SessionStart) || return 1
+  local sid
+  sid=$(printf '%s' "$frame" | jq -r '.payload.session_id // empty' 2>/dev/null) || true
+  [[ -n "$sid" && "$sid" != "null" ]] || return 1
+  printf '%s' "$sid"
+}
+
+# cmux_wait_turn_end <surface_id> <timeout> — the callee's turn is over.
+# Replaces a poll cadence with one blocking call that burns no model tokens.
+# SubagentStop and SessionEnd are matched alongside Stop: a callee that exits
+# instead of settling is still a turn that ended, and waiting for a Stop that
+# will never come is how a poller hangs to its deadline.
+cmux_wait_turn_end() {
+  local surf="$1" timeout="${2:-600}"
+  cmux_events_first "$timeout" \
+    "select(.payload.phase == \"completed\" and ((.surface_id // \"\") == \"$surf\" or .surface_id == null))" \
+    agent.hook.Stop agent.hook.SubagentStop agent.hook.SessionEnd
+}
+
+# cmux_submit_lengths <workspace_id> <settle_seconds> — one message_length per line.
+# The settle window is spent in full on every call (see cmux_events_all), so the
+# default is small: distinguishing a clean submit from a fragmented one is the
+# only thing the extra wait buys, and the paste path confirms in well under a
+# second today. Do not raise it to a read-timeout-sized number.
+# The character-exact replacement for input-box forensics. Read the result as:
+#   no lines        → nothing submitted; the text sits in the box and `send-key
+#                     Enter` is the fix (never a re-send, which appends).
+#   one line == sent → clean submit.
+#   one line < sent  → silent byte loss at the transport.
+#   several lines    → fragmentation; the payload arrived as multiple turns.
+# Do NOT length-check against agent.hook.UserPromptSubmit instead: its
+# tool_input_length counts claude's own wrapping (56 where this reported 43).
+cmux_submit_lengths() {
+  local ws="$1" timeout="${2:-2}"
+  cmux_events_all "$timeout" 10 \
+    "select(.workspace_id == \"$ws\") | .payload.message_length" \
+    workspace.prompt.submitted
+}
+
+# cmux_send_landed_on <intended_surface_id> <timeout> — 0 iff the last send
+# resolved to the surface we meant. This is the mechanical form of the
+# substituted-target check cmux_handle_ok can only refuse in advance: a handle
+# that fails to resolve does not error, it silently retargets, and
+# result.surface_id is the only place that shows up.
+cmux_send_landed_on() {
+  local want="$1" timeout="${2:-5}"
+  cmux_events_first "$timeout" \
+    "select(.payload.result.surface_id == \"$want\")" \
+    surface.input_sent surface.key_sent >/dev/null
 }
 
 # --- Scroll-immune screen reads ----------------------------------------------
