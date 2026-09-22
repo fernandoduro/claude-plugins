@@ -1433,6 +1433,27 @@ else
 fi
 rm -rf "$GH" "$GCD" "$GSD"
 
+# --- 5. The SHIPPED default arms it ------------------------------------------
+# Every case above sets the slice, so a default of "" or 0 would leave the gate
+# permanently disarmed in production while all four of them still passed. This one
+# runs with HOTLINE_CMUX_TURN_WAIT_SLICE unset. (The stub answers immediately, so
+# the 30s default costs nothing here.)
+GC=$(setup_gate_call "$GATE_SUBMITTED" on)
+GH=${GC%%|*}; grest=${GC#*|}; GCD=${grest%%|*}; GSD=${grest#*|}
+set +e
+GOUT=$(env -u HOTLINE_CMUX_TURN_WAIT_SLICE HOME="$GH" PATH="$GSD:$PATH" \
+  bash "$DIAL_SCRIPTS/wait-for-response.sh" "$GCD" --timeout 30 --submit-deadline 6 2>/dev/null)
+GRC=$?
+set -e
+if grep -q 'events .*--name agent.hook.Stop' "$GSD/calls.log" 2>/dev/null \
+   && [[ $GRC -eq 0 ]]; then
+  pass "the shipped default (no HOTLINE_CMUX_TURN_WAIT_SLICE) arms the gate"
+else
+  fail "the shipped default (no HOTLINE_CMUX_TURN_WAIT_SLICE) arms the gate" \
+    "rc=$GRC calls: $(cat "$GSD/calls.log" 2>/dev/null)"
+fi
+rm -rf "$GH" "$GCD" "$GSD"
+
 # ---- summary ---------------------------------------------------------------
 
 echo ""
