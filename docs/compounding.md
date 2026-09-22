@@ -401,6 +401,13 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   withhold from the environment whatever the code is meant to read from a file.
   (claude-plugins-7wze.8, 2a4cc64)
 
+  The third dimension is the stub's LIFETIME. A stub that has already exited cannot
+  exhibit a hazard that only exists while the real program is still running: one that
+  `cat`s a finished file can never hold a reader up or take a SIGPIPE, and one that
+  sleeps a fixed time instead of honouring `--timeout` turns its own nap into a fake
+  overrun. Three cases guarding the cmux-events reader passed with every guard removed
+  until the stub streamed and stayed open for its window.
+  (claude-plugins-056z, a5c775b)
 - **SIGINT to a backgrounded process is a no-op, so "test the Ctrl-C path" needs job
   control and a group signal.** A background job of a shell without job control inherits
   SIGINT *ignored*, and a later `trap ... INT` cannot reclaim it — a probe that
@@ -422,7 +429,11 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   Claude-side install sat at 0.32.0 while `main` carried 0.32.1, and that install
   reported success without moving it. Refresh with `claude plugin update` and read
   the version `claude plugin list` reports; docs/release.md §4 has the sequence.
-  (228dd59, docs/release.md §4)
+  **This has now happened twice to the same plugin**: hotline's install sat at 0.34.1
+  while `main` carried 0.34.3, so the release's own bug fixes were absent from the
+  transport every dial on that machine used. Read the version back from the INSTALL,
+  never from the repo — a manifest bump is not a deployment.
+  (228dd59, docs/release.md §4, claude-plugins-056z)
 - **Flags become beads tasks at the moment of noticing.** "Worth fixing later" said
   in prose evaporates; `bd create` with `discovered-from` survives the session.
   (memory: feedback_flag_becomes_beads_task)

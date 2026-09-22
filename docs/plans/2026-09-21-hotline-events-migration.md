@@ -137,17 +137,52 @@ fallback).
 
 ### Phase 3 (sequential — highest value first)
 
-**3a. `cmux-paste.sh`** — replace the confirmation ladder at lines 404–560 with
-`cmux_events_seq` before the send and `cmux_submit_lengths` after. The readings:
-no frame = nothing submitted (the fix is `send-key Enter`, never a re-`send`,
-which appends); one frame at the sent length = clean; one frame short = silent
-byte loss; several frames = fragmentation. Do **not** length-check against
-`agent.hook.UserPromptSubmit` — its `tool_input_length` counts claude's wrapping
-(56 where `message_length` was 43). Mind the settle-window cost:
-`cmux_submit_lengths` always spends its full window, defaulting to 2s, and the
-current path confirms in well under a second, so do not regress the fast case.
-Suites: `cmux-paste-parked-retry_test.sh`, `cmux-paste-slash-split_test.sh`,
-`cmux-paste-wait-box-callers_test.sh`.
+**3a. `cmux-paste.sh`** — an integrity check ABOVE the ladder, not a
+replacement of it. The plan originally said to replace the confirmation ladder
+at lines 404–560. That is wrong, and the reason matters:
+
+The PRIMARY tier is **already byte-definitive** — a `grep -F` for the call-id
+nonce in the callee's transcript. It is not screen forensics, it reads submitted
+bytes, and `workspace.prompt.submitted` is not stronger than it for the question
+it answers ("did the payload reach the callee's session?"). Replacing it would
+trade a stronger signal for a weaker one.
+
+What events add is a failure class **neither existing tier can see**:
+
+`hotline_inject_call_id` places the nonce at the HEAD of the payload — a
+prepended `[CALL_ID: …]` line, or inline on the first line of a slash command.
+So a payload truncated at the TAIL still carries the nonce. The transcript grep
+finds it, `confirmed_by_transcript` returns 0, and the delivery is reported
+`confirmed:"transcript"` while the callee holds a partial work order. Silent byte
+loss is structurally invisible to every tier in the current ladder.
+`message_length` is the only thing that sees it, and a frame COUNT above one is
+the only thing that sees fragmentation.
+
+So 3a is: baseline `cmux_events_seq` before the paste, and after the ladder
+resolves, compare `cmux_submit_lengths "$WS_ID"` against the payload's own
+character count. Report it in additive JSON fields beside `confirmed` —
+`delivered`/`confirmed` must NOT change, because a truncated payload IS in the
+callee's queue and calling it undelivered would invite a double-delivery.
+
+**Two things block making it default-on, and both need one live measurement:**
+
+1. **Cost.** `cmux_events_all` cannot return early (see phase 1), so
+   `cmux_submit_lengths` spends its whole settle window on EVERY paste. The
+   current ladder confirms in well under a second. Wiring a 2s window into the
+   delivery path is a per-dial regression for report-only data.
+2. **Calibration.** The expected length is not known to equal `wc -m` of the
+   payload file. A trailing newline, the REPL's own trimming, and character-vs-
+   byte counting each shift it by an unmeasured offset, and `message_length` was
+   verified character-exact against *known plaintexts*, never against a hotline
+   payload through the paste path. Guessing a tolerance ships a false-warning
+   generator into every delivery.
+
+**Frame COUNT needs no calibration** — two frames for one send is fragmentation
+whatever the offset. That half can land first, cheaply, and is where to start.
+
+Take the calibration measurement by pasting one payload of known length through
+a real dial and reading its `workspace.prompt.submitted` frame, then fix the
+offset in the comparison. Until then do not enable a length verdict.
 
 **3b. `cmux-reuse-surface.sh`** — preflight only. `cmux_send_landed_on` after
 each send is the mechanical form of the substituted-target check that

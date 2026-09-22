@@ -337,11 +337,12 @@ fi
 cp "$TMP/cmux.orig" "$STREAM_STUB"
 unset STREAM_SURF STREAM_HOLD
 
-# --- 11. The corrected guard message ----------------------------------------
-# It used to say cmux resolves a missing target to the FOCUSED surface. True of a
-# malformed `cmux rpc`; false of the CLI verbs every dial script uses, which fall
-# back to $CMUX_*_ID and land on the CALLER'S OWN pane. The behaviour was always
-# right; the stated reason sent the next debugger to the wrong surface.
+# --- 11. The empty-handle guard names the right surface ----------------------
+# The guard must name the CALLER'S OWN pane. A cmux CLI verb falls back to the
+# inherited $CMUX_*_ID, so that is where an empty handle delivers; only a
+# malformed `cmux rpc` resolves against the FOCUSED surface. Blaming the focused
+# surface here is what sends the next debugger to the wrong pane, so the wording
+# is asserted, not left to drift.
 MSG=$(cmux_handle_ok "a probe" "" 2>&1 || true)
 if printf '%s' "$MSG" | grep -qi 'FOCUSED'; then
   fail "the empty-handle guard names the caller's own pane, not the focused surface" \
