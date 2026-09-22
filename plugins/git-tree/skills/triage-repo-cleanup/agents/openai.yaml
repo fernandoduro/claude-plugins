@@ -1,0 +1,3 @@
+interface:
+  display_name: Triage Repo Cleanup
+  short_description: Classify stale worktrees, branches, refs, and stashes by whether deleting them loses work.

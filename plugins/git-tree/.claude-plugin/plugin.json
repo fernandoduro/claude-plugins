@@ -1,7 +1,7 @@
 {
   "name": "git-tree",
-  "description": "Create git worktrees with symlinked dependencies. Use when user says \"git worktree\", \"work on two branches\", \"parallel branch work\", \"review PR without switching\", \"keep my changes while checking out another branch\", or wants isolated branch directories sharing vendor/node_modules.",
-  "version": "1.2.4",
+  "description": "Create and tear down git worktrees, and triage a repo's leftovers. Use when user says \"git worktree\", \"work on two branches\", \"parallel branch work\", \"review PR without switching\", \"keep my changes while checking out another branch\", or wants to clean up stale worktrees, merged or abandoned branches, stale remote-tracking refs, and old stashes without losing work.",
+  "version": "1.3.0",
   "author": {
     "name": "JT Sternberg",
     "url": "https://github.com/jtsternberg"
