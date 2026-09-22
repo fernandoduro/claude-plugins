@@ -47,7 +47,7 @@ Harvested live from replays on cmux 0.64.25. **The retained buffer is a rolling 
 | category | names |
 |---|---|
 | `agent` | `agent.hook.SessionStart`, `agent.hook.UserPromptSubmit`, `agent.hook.PreToolUse`, `agent.hook.Stop`, `agent.hook.SubagentStop`, `agent.hook.SessionEnd`, `agent.hook.Notification`, `agent.notification.decision`, `agent.journal.unattributed` |
-| `surface` | `surface.created`, `surface.selected`, `surface.focused`, `surface.closed`, `surface.input_sent` |
+| `surface` | `surface.created`, `surface.selected`, `surface.focused`, `surface.closed`, `surface.input_sent`, `surface.key_sent` |
 | `workspace` | `workspace.created`, `workspace.selected`, `workspace.closed`, `workspace.reordered`, `workspace.prompt.submitted` |
 | `pane` | `pane.created`, `pane.focused` |
 | `window` | `window.created`, `window.keyed`, `window.unkeyed` |
@@ -157,6 +157,32 @@ Two fields earn their keep:
 
 `result.queued` tells you whether the input was queued rather than delivered
 straight through.
+
+**`surface.key_sent` is the same frame for `cmux send-key`**, which matters because
+submitting into a TUI/Ink REPL takes two calls — the text, then a separate Enter —
+and each half now has its own event:
+
+```json
+{"name":"surface.key_sent","source":"socket.v2","surface_id":"A382E9F4-…",
+ "payload":{"method":"surface.send_key",
+            "params":{"key":"Enter","surface_id":"surface:49"},
+            "result":{"queued":false,"surface_id":"A382E9F4-…",
+                      "surface_ref":"surface:49","workspace_id":"8CFA1F37-…"}}}
+```
+
+Two details it adds over `surface.input_sent`:
+
+- **`params.key` is not redacted** — the key name arrives verbatim, so you can tell
+  an `Enter` from an `Escape` or a `C-c` after the fact.
+- **`params.surface_id` is the handle you PASSED; `result.surface_id` is what cmux
+  RESOLVED it to.** Here a positional `surface:49` went in and a UUID came back.
+  Seeing both sides is the sharpest form of the target check below: a substituted
+  target shows up as the two disagreeing.
+
+So a full submit into a REPL leaves three frames — `surface.input_sent` for the text,
+`surface.key_sent` for the Enter, then `workspace.prompt.submitted` when the REPL
+actually accepts it. Missing the third with the first two present is precisely the
+"delivered but never submitted" case.
 
 ### Trap: an empty or unresolved handle silently targets *you*
 

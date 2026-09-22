@@ -8,8 +8,10 @@
 // or a drifted policy override all fail here. Regenerate with:
 //     node scripts/gen-codex-catalog.mjs
 //
-// This mirrors tests/parser-drift.test.mjs: a repo-root suite, registered by an
-// explicit `run` line in tests/run-all.sh (repo-root tests are NOT glob-discovered).
+// This mirrors tests/parser-drift.test.mjs: a repo-root suite, discovered by the
+// `tests/*.test.mjs` glob in tests/run-all.sh — the runner's own suites are
+// globbed for the same reason plugin suites are, so a rename here cannot quietly
+// drop them from the run.
 // ADR: docs/codex/adr-002-marketplace-catalog.md.
 
 import { test } from 'node:test';
