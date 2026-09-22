@@ -150,6 +150,96 @@ GOT=$(cmux_wait_turn_end "$SURF" 1 || true)
   && pass "a 'received'-only Stop is not reported as a finished turn" \
   || fail "a 'received'-only Stop is not reported as a finished turn" "got '$GOT'"
 
+# --- 4b. The ATTRIBUTABLE turn end ------------------------------------------
+# cmux_wait_turn_end answers "something finished"; a response waiter needs "the
+# callee I dialed finished", and the two are not the same question. Its surface
+# match falls back to a null surface_id — which most real Stop frames carry — so
+# any session's turn end satisfies it, including the operator's own.
+#
+# cmux_wait_session_turn_end discriminates on payload.session_id and on nothing
+# else. payload.cwd was measured out of the running twice over: one directory
+# carried agent.hook frames for two different sessions (and a hotline callee runs
+# in the CALLER'S cwd by definition), and one session emitted frames under two
+# different cwds after cd'ing. The first wakes a waiter on somebody else's turn;
+# the second blocks it through a turn end that really happened.
+TE_UUID="6f0b4990-a577-434c-9940-6b3c10d5affa"
+TE_COMPOSITE="cmux-feed-v1:Y2xhdWRl:$(printf '%s' "$TE_UUID" | base64 | tr -d '\n')"
+OTHER_UUID="b2d244b2-b67b-4f3b-bbc5-ed9217e6e691"
+OTHER_COMPOSITE="cmux-feed-v1:Y2xhdWRl:$(printf '%s' "$OTHER_UUID" | base64 | tr -d '\n')"
+SHARED_CWD="/Users/JT/Code/claude-plugins"
+
+frames
+frame "{\"name\":\"agent.hook.Stop\",\"seq\":90,\"surface_id\":null,\"payload\":{\"phase\":\"received\",\"session_id\":\"$TE_COMPOSITE\",\"cwd\":\"$SHARED_CWD\"}}"
+frame "{\"name\":\"agent.hook.Stop\",\"seq\":91,\"surface_id\":null,\"payload\":{\"phase\":\"completed\",\"session_id\":\"$TE_COMPOSITE\",\"cwd\":\"$SHARED_CWD\"}}"
+GOT=$(cmux_wait_session_turn_end "$TE_UUID" 1 || true)
+if printf '%s' "$GOT" | jq -e '.seq == 91' >/dev/null 2>&1; then
+  pass "our session's completed Stop satisfies the attributable wait (null surface_id and all)"
+else
+  fail "our session's completed Stop satisfies the attributable wait" "got '$GOT'"
+fi
+
+# THE CASE THE WEAK WAITER GETS WRONG: a turn ending in ANOTHER session, in the
+# same directory, with a null surface_id. Measured as the common shape.
+frames
+frame "{\"name\":\"agent.hook.Stop\",\"seq\":92,\"surface_id\":null,\"payload\":{\"phase\":\"completed\",\"session_id\":\"$OTHER_COMPOSITE\",\"cwd\":\"$SHARED_CWD\"}}"
+GOT=$(cmux_wait_session_turn_end "$TE_UUID" 1 || true)
+[[ -z "$GOT" ]] \
+  && pass "another session's turn end in the SAME cwd does not satisfy it" \
+  || fail "another session's turn end in the SAME cwd does not satisfy it" "got '$GOT'"
+
+# …and the weak waiter demonstrably does accept it, which is why the strict one
+# exists. Asserted so nobody "simplifies" the caller back onto it.
+GOT=$(cmux_wait_turn_end "A-SURFACE-THAT-NEVER-APPEARS" 1 || true)
+if printf '%s' "$GOT" | jq -e '.seq == 92' >/dev/null 2>&1; then
+  pass "cmux_wait_turn_end still matches ANY session (documented, and why the strict one exists)"
+else
+  fail "cmux_wait_turn_end still matches ANY session" "got '$GOT'"
+fi
+
+# A callee that exits instead of settling is still a turn that ended; waiting for
+# a Stop that will never come is how a poller hangs to its deadline.
+frames
+frame "{\"name\":\"agent.hook.SessionEnd\",\"seq\":93,\"surface_id\":null,\"payload\":{\"phase\":\"completed\",\"session_id\":\"$TE_COMPOSITE\"}}"
+GOT=$(cmux_wait_session_turn_end "$TE_UUID" 1 || true)
+if printf '%s' "$GOT" | jq -e '.seq == 93' >/dev/null 2>&1; then
+  pass "a SessionEnd counts as our turn ending"
+else
+  fail "a SessionEnd counts as our turn ending" "got '$GOT'"
+fi
+
+# Only the "received" half in the window is not a turn end (trap 4).
+frames
+frame "{\"name\":\"agent.hook.Stop\",\"seq\":94,\"surface_id\":null,\"payload\":{\"phase\":\"received\",\"session_id\":\"$TE_COMPOSITE\"}}"
+GOT=$(cmux_wait_session_turn_end "$TE_UUID" 1 || true)
+[[ -z "$GOT" ]] \
+  && pass "a 'received'-only Stop is not our turn ending either" \
+  || fail "a 'received'-only Stop is not our turn ending either" "got '$GOT'"
+
+# A build that stops wrapping the feed id must not silently turn this into a wait
+# that never returns.
+frames
+frame "{\"name\":\"agent.hook.Stop\",\"seq\":95,\"surface_id\":null,\"payload\":{\"phase\":\"completed\",\"session_id\":\"$TE_UUID\"}}"
+GOT=$(cmux_wait_session_turn_end "$TE_UUID" 1 || true)
+if printf '%s' "$GOT" | jq -e '.seq == 95' >/dev/null 2>&1; then
+  pass "a bare (unwrapped) session id still satisfies the attributable wait"
+else
+  fail "a bare (unwrapped) session id still satisfies the attributable wait" "got '$GOT'"
+fi
+
+# No session id to attribute to → refuse outright (rc 2) rather than wait on
+# anything that moves. A caller with no session must keep its screen fallback.
+# Stdout redirected, not just stderr: a regression here MATCHES, and the frame it
+# prints would otherwise land mid-line in this suite's own output — which is how
+# the control for this case first read as "did not fire".
+if bash -c "set -euo pipefail; source '$LIB'; cmux_wait_session_turn_end '' 1; exit 9" >/dev/null 2>&1; then
+  fail "an empty session id refuses rather than matching anything" "returned 0"
+else
+  RC=$?
+  [[ $RC -eq 2 ]] \
+    && pass "an empty session id refuses outright (rc 2), never matching anything" \
+    || fail "an empty session id refuses outright (rc 2)" "rc=$RC"
+fi
+
 # --- 5. Trap 5: a null surface_id must not be dropped ------------------------
 frames
 frame "{\"name\":\"agent.hook.Stop\",\"seq\":12,\"surface_id\":null,\"payload\":{\"phase\":\"completed\"}}"

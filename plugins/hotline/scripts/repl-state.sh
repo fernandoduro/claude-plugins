@@ -308,6 +308,48 @@ cmux_wait_turn_end() {
     agent.hook.Stop agent.hook.SubagentStop agent.hook.SessionEnd
 }
 
+# cmux_wait_session_turn_end <session_uuid> <timeout> — THE CALLEE I DIALED
+# finished its turn. The attributable form of cmux_wait_turn_end, and the only one
+# a response waiter may gate on.
+#
+# WHY NOT cmux_wait_turn_end: its surface match falls back to a null surface_id,
+# because most real Stop frames carry one (measured on 0.64.25: 18 of 42 with a
+# null top-level surface_id, and payload.surface_id null on exactly the same 18).
+# That fallback is what makes it match at all, and it also makes ANY session's turn
+# end satisfy it — a caller waiting on its callee would wake on the operator
+# finishing a turn in another pane.
+#
+# WHY NOT payload.cwd EITHER, which is the other field every frame carries. Two
+# measurements kill it:
+#   • A cwd is not one session. In a single 900-frame replay, /Users/JT/Code/
+#     claude-plugins carried agent.hook frames for two different session ids, and
+#     so did a second directory — and a hotline callee runs in the CALLER'S OWN
+#     cwd by definition, so that collision is the common case, not an edge one.
+#   • A cwd is not even one value per session. The same session emitted frames
+#     under both its launch directory and a subdirectory it had cd'd into, so an
+#     equality test against the launch cwd misses frames the callee really sent.
+# The first failure wakes a waiter on somebody else's turn; the second blocks it
+# through a turn end that did happen. Only the session id is sound.
+#
+# payload.session_id IS A COMPOSITE — cmux-feed-v1:<base64 agent>:<base64 uuid> —
+# so an equality test against a bare uuid never matches. Both spellings are
+# accepted, exactly as in cmux_wait_session_start, so a build that stops wrapping
+# the id does not silently turn this into a wait that never returns.
+#
+# SubagentStop and SessionEnd are matched alongside Stop for the same reason the
+# weak waiter matches them: a callee that exits instead of settling is still a turn
+# that ended, and waiting for a Stop that will never come is how a poller hangs to
+# its deadline.
+cmux_wait_session_turn_end() {
+  local sess="$1" timeout="${2:-600}"
+  [[ -n "$sess" ]] || return 2
+  local sess_b64
+  sess_b64=$(printf '%s' "$sess" | base64 | tr -d '\n')
+  cmux_events_first "$timeout" \
+    "select(.payload.phase == \"completed\" and ((.payload.session_id // \"\") | (. == \"$sess\" or contains(\"$sess_b64\"))))" \
+    agent.hook.Stop agent.hook.SubagentStop agent.hook.SessionEnd
+}
+
 # cmux_submit_lengths <workspace_id> <settle_seconds> — one message_length per line.
 # The settle window is spent in full on every call (see cmux_events_all), so the
 # default is small: distinguishing a clean submit from a fragmented one is the

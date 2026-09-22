@@ -1273,6 +1273,166 @@ else
 fi
 rm -rf "$HN" "$CDN" "$SDN"
 
+# ---- the when-to-read gate: cmux events instead of a 2s tick ---------------
+# Once the transcript has confirmed our message submitted, the only thing left to
+# look for is the turn ending — and re-deriving that from the transcript every 2s
+# is ~900 reads across a 30-minute work order. The gate blocks on
+# agent.hook.Stop for the callee's SESSION instead.
+#
+# What these cases pin is WHEN it arms and what it is allowed to arm on, because
+# both halves have a failure mode worse than the polling they replace:
+#   • Arming BEFORE submit is confirmed would swallow the submit deadline and the
+#     input-box check, which are the only things that tell "sitting unsubmitted in
+#     the box" from "submitted, model working" (claude-plugins-mo8m).
+#   • Arming without the before-marker would match a REPLAYED Stop from the
+#     retained buffer and return instantly — a gate that silently degenerates into
+#     the poll it replaced, which no behavioural assertion would notice.
+# The session-attribution half is pinned in events-primitives_test.sh, against the
+# primitive, where a foreign frame's rejection is deterministic.
+echo ""
+echo "when-to-read gate (cmux events):"
+
+GNONCE="gatenonce3c0001"
+GSESS="d1d722b9-d8c1-42ef-987e-468ce2662c73"
+GCOMPOSITE="cmux-feed-v1:Y2xhdWRl:$(printf '%s' "$GSESS" | base64 | tr -d '\n')"
+
+# setup_gate_call <transcript-body> <events:on|off> → "HOME|CALL_DIR|STUBDIR"
+# The cmux stub logs every call. `events`:
+#   --snapshot  → the ack alone, which is what a real cmux prints (and what
+#                 --no-ack would suppress entirely).
+#   otherwise   → one Stop frame for OUR session, AND — modelling the real
+#                 sequence — it appends the callee's terminal STATUS to the
+#                 transcript as it serves that frame. The turn ends, then the
+#                 answer is on disk; the read at the top of the next iteration is
+#                 what finds it. So a gate wired into the wrong place in the loop
+#                 shows up as a timeout rather than as a response.
+setup_gate_call() {
+  local body="$1" events="$2"
+  local h cd sd cwd enc tx
+  h=$(mktemp -d); cd=$(mktemp -d "$TMP_ROOT"/hotline-gate-XXXXX); sd=$(mktemp -d)
+  cwd="/fake/callee/ws"
+  enc=$(printf '%s' "$cwd" | sed 's|[^a-zA-Z0-9]|-|g')
+  mkdir -p "$h/.claude/projects/$enc"
+  tx="$h/.claude/projects/$enc/$GSESS.jsonl"
+  printf '%s\n' "$body" > "$tx"
+  echo "$cwd"   > "$cd/cwd.txt"
+  echo "$GSESS" > "$cd/session_id.txt"
+  echo "$GNONCE" > "$cd/call_id.txt"
+  echo "w1:s1"  > "$cd/surface_ref.txt"
+  echo "true"   > "$cd/keep_workspace.txt"
+  # The callee's answer is written HERE, in the suite's own quoting, and the stub
+  # only cats it. Building that JSONL record inside the stub heredoc meant printf
+  # rendering the \n inside its text field as a real newline, which split the record
+  # and left the extractor an unparseable transcript — and an unparseable transcript
+  # FALLS BACK to the screen scrape, so the case failed as an opaque timeout with no
+  # hint that the fixture was what was broken.
+  printf '%s\n' '{"type":"assistant","isSidechain":false,"sessionId":"'"$GSESS"'","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"STATUS: WORK_IN_PROGRESS call_id='"$GNONCE"'\ngate-sourced answer\nSTATUS: DONE call_id='"$GNONCE"'"}]}}' > "$sd/answer.jsonl"
+  cat > "$sd/cmux" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$sd/calls.log"
+[[ "\$1" != "events" ]] && exit 0
+[[ "$events" != "on" ]] && exit 0
+shift
+snap=0; noack=0
+for a in "\$@"; do
+  [[ "\$a" == "--snapshot" ]] && snap=1
+  [[ "\$a" == "--no-ack" ]] && noack=1
+done
+if [[ \$snap -eq 1 ]]; then
+  [[ \$noack -eq 1 ]] && exit 0
+  printf '{"type":"ack","resume":{"oldest_seq":1,"latest_seq":900,"gap":false}}\n'
+  exit 0
+fi
+cat "$sd/answer.jsonl" >> "$tx"
+printf '{"name":"agent.hook.Stop","seq":901,"surface_id":null,"payload":{"phase":"completed","session_id":"$GCOMPOSITE","cwd":"/fake/callee/ws"}}\n'
+echo "Error: Timed out waiting for a matching event" >&2
+exit 0
+STUB
+  chmod +x "$sd/cmux"
+  echo "$h|$cd|$sd"
+}
+
+# The transcript as it stands at the moment of the first read: our message is IN
+# (so the submit is confirmed and the gate may arm) and the callee has not
+# answered yet.
+GATE_SUBMITTED='{"type":"user","isSidechain":false,"sessionId":"'"$GSESS"'","message":{"content":"[CALL_ID: '"$GNONCE"'] do the thing"}}'
+
+# --- 1. It arms once the submit is confirmed, and the answer still comes back --
+GC=$(setup_gate_call "$GATE_SUBMITTED" on)
+GH=${GC%%|*}; grest=${GC#*|}; GCD=${grest%%|*}; GSD=${grest#*|}
+set +e
+GOUT=$(HOME="$GH" PATH="$GSD:$PATH" HOTLINE_CMUX_TURN_WAIT_SLICE=2 \
+  bash "$DIAL_SCRIPTS/wait-for-response.sh" "$GCD" --timeout 30 --submit-deadline 6 2>/dev/null)
+GRC=$?
+set -e
+if [[ $GRC -eq 0 ]] && [[ "$(printf '%s' "$GOUT" | jq -r .response 2>/dev/null)" == *"gate-sourced answer"* ]]; then
+  pass "the gated wait still returns the transcript's answer"
+else
+  fail "the gated wait still returns the transcript's answer" "rc=$GRC out=$GOUT"
+fi
+if grep -q 'events .*--name agent.hook.Stop' "$GSD/calls.log" 2>/dev/null; then
+  pass "…by blocking on a turn-end event rather than ticking"
+else
+  fail "…by blocking on a turn-end event rather than ticking" "calls: $(cat "$GSD/calls.log" 2>/dev/null)"
+fi
+# THE BEFORE-MARKER. Without --after, the retained buffer replays a Stop from a
+# turn that ended before this wait began, the gate returns instantly on every
+# tick, and it becomes the 2s poll again with nothing to show that it did.
+if grep 'events .*--name agent.hook.Stop' "$GSD/calls.log" | grep -qv -- '--after'; then
+  fail "every turn-end wait is scoped by a before-marker" "calls: $(grep events "$GSD/calls.log")"
+else
+  pass "every turn-end wait is scoped by a before-marker (--after)"
+fi
+rm -rf "$GH" "$GCD" "$GSD"
+
+# --- 2. It does NOT arm while the submit is unconfirmed -----------------------
+# The fast-fail path owns those ticks: the submit deadline and the input-box check
+# are what distinguish a parked payload from a working callee, and a 30s block
+# would swallow both.
+GC=$(setup_gate_call '{"type":"user","isSidechain":false,"sessionId":"'"$GSESS"'","message":{"content":"unrelated chatter"}}' on)
+GH=${GC%%|*}; grest=${GC#*|}; GCD=${grest%%|*}; GSD=${grest#*|}
+set +e
+HOME="$GH" PATH="$GSD:$PATH" HOTLINE_CMUX_TURN_WAIT_SLICE=2 \
+  bash "$DIAL_SCRIPTS/wait-for-response.sh" "$GCD" --timeout 8 --submit-deadline 2 >/dev/null 2>&1
+set -e
+if grep -q 'events .*--name agent.hook.Stop' "$GSD/calls.log" 2>/dev/null; then
+  fail "no turn-end wait runs before the submit is confirmed" "calls: $(cat "$GSD/calls.log")"
+else
+  pass "no turn-end wait runs before the submit is confirmed"
+fi
+rm -rf "$GH" "$GCD" "$GSD"
+
+# --- 3. A cmux with no event stream keeps the poll ---------------------------
+# The screen-reading and transcript-polling paths are the only thing that works
+# outside cmux or on a build predating the stream, so the gate has to be absent,
+# not merely unsuccessful.
+GC=$(setup_gate_call "$GATE_SUBMITTED" off)
+GH=${GC%%|*}; grest=${GC#*|}; GCD=${grest%%|*}; GSD=${grest#*|}
+set +e
+HOME="$GH" PATH="$GSD:$PATH" HOTLINE_CMUX_TURN_WAIT_SLICE=2 \
+  bash "$DIAL_SCRIPTS/wait-for-response.sh" "$GCD" --timeout 8 --submit-deadline 6 >/dev/null 2>&1
+set -e
+if grep -q 'events .*--name agent.hook.Stop' "$GSD/calls.log" 2>/dev/null; then
+  fail "a cmux whose event stream is unreadable runs no turn-end wait" "calls: $(cat "$GSD/calls.log")"
+else
+  pass "a cmux whose event stream is unreadable runs no turn-end wait"
+fi
+rm -rf "$GH" "$GCD" "$GSD"
+
+# --- 4. The escape hatch -----------------------------------------------------
+GC=$(setup_gate_call "$GATE_SUBMITTED" on)
+GH=${GC%%|*}; grest=${GC#*|}; GCD=${grest%%|*}; GSD=${grest#*|}
+set +e
+HOME="$GH" PATH="$GSD:$PATH" HOTLINE_CMUX_TURN_WAIT_SLICE=0 \
+  bash "$DIAL_SCRIPTS/wait-for-response.sh" "$GCD" --timeout 8 --submit-deadline 6 >/dev/null 2>&1
+set -e
+if grep -q 'events .*--name agent.hook.Stop' "$GSD/calls.log" 2>/dev/null; then
+  fail "HOTLINE_CMUX_TURN_WAIT_SLICE=0 restores the plain poll" "calls: $(cat "$GSD/calls.log")"
+else
+  pass "HOTLINE_CMUX_TURN_WAIT_SLICE=0 restores the plain poll"
+fi
+rm -rf "$GH" "$GCD" "$GSD"
+
 # ---- summary ---------------------------------------------------------------
 
 echo ""
