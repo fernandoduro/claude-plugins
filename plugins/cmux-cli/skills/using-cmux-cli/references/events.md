@@ -109,6 +109,8 @@ and carries a `message_preview` capped at 240 characters, plus a
             "redacted_fields":["message"],"workspace_id":"4C7FA894-…"}}
 ```
 
+<!-- tripwire: claude-plugins-8ur4 — cmux#13687; if that is fixed, this cap and the at-least-240 reading go away. -->
+
 **`message_length` IS CAPPED AT 240 AND CANNOT VERIFY A LONGER PAYLOAD.** It
 equals the preview's own length in every frame, and no frame reports more than
 240. Measured on cmux 0.64.25 over a 900-frame replay: 21 submissions, all 21

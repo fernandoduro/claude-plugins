@@ -659,6 +659,10 @@ else
 fi
 
 # --- How many turns did it land as? -----------------------------------------
+# tripwire: claude-plugins-8ur4 — cmux#13687; a COUNT is all this can be while
+# message_length caps at 240. If that is fixed, add the length check back here
+# (it is the only thing that catches byte loss the head-anchored nonce cannot)
+# and keep this count.
 # Counted only on the confirmed path, and only when the marker above was read.
 # cmux_events_all cannot return early, so this spends its whole settle window on
 # every call, against a ladder that confirms in well under a second —

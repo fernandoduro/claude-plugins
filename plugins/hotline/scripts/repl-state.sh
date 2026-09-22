@@ -360,6 +360,8 @@ cmux_wait_session_turn_end() {
 # `message_preview`, not of the message (events.md has the measurement: 21/21
 # submissions with message_length == preview length, 14 at exactly 240, none
 # above). So read a value as three-valued, never as an equality:
+# tripwire: claude-plugins-8ur4 — cmux#13687; if that is fixed, this cap and the
+# at-least-240 reading go away, and a real length check becomes worth having.
 #   no lines        → nothing submitted; the text sits in the box and `send-key
 #                     Enter` is the fix (never a re-send, which appends).
 #   one line < 240  → exact; a value under what was sent is byte loss at the
