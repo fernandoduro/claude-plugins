@@ -55,6 +55,10 @@ if [[ -n "${CMUX_STUB_EVENTS_FAIL:-}" ]]; then
   echo "Error: unknown subcommand 'events'" >&2; exit 2
 fi
 if [[ $snap -eq 1 ]]; then
+  # Real cmux 0.64.25 prints ONLY the ack for --snapshot, so --no-ack suppresses
+  # the single line it emits and yields nothing. A stub that printed it anyway hid
+  # a cmux_events_seq that could never return a marker against real cmux.
+  [[ $noack -eq 1 ]] && exit 0
   printf '{"type":"ack","resume":{"oldest_seq":1,"latest_seq":%s,"gap":false}}\n' \
     "${CMUX_STUB_LATEST_SEQ:-500}"
   exit 0
@@ -225,12 +229,20 @@ cmux_send_landed_on "$SURF" 1 \
   || pass "a send that landed on the caller's own surface is caught"
 
 # --- 9. Session start --------------------------------------------------------
+# `payload.session_id` is NOT a bare uuid. cmux reports a composite feed id,
+# `cmux-feed-v1:<base64 agent name>:<base64 session uuid>`, measured live on
+# 0.64.25. These cases use that shape: with a bare id they passed while the
+# function could not match or return anything usable against real cmux.
+UUID="d1d722b9-d8c1-42ef-987e-468ce2662c73"
+UUID_B64=$(printf '%s' "$UUID" | base64 | tr -d '\n')
+COMPOSITE="cmux-feed-v1:Y2xhdWRl:${UUID_B64}"
+
 frames
-frame "{\"name\":\"agent.hook.SessionStart\",\"seq\":50,\"surface_id\":null,\"payload\":{\"phase\":\"completed\",\"session_id\":\"abc-123\",\"cwd\":\"/Users/x/proj\"}}"
+frame "{\"name\":\"agent.hook.SessionStart\",\"seq\":50,\"surface_id\":null,\"payload\":{\"phase\":\"completed\",\"session_id\":\"$COMPOSITE\",\"cwd\":\"/Users/x/proj\"}}"
 GOT=$(cmux_wait_session_start "/Users/x/proj" 1 || true)
-[[ "$GOT" == "abc-123" ]] \
-  && pass "session start yields the callee's session_id, matched on cwd" \
-  || fail "session start yields the callee's session_id, matched on cwd" "got '$GOT'"
+[[ "$GOT" == "$UUID" ]] \
+  && pass "session start DECODES the composite feed id to the bare session uuid" \
+  || fail "session start DECODES the composite feed id to the bare session uuid" "got '$GOT'"
 
 GOT=$(cmux_wait_session_start "/Users/x/other" 1 || true)
 [[ -z "$GOT" ]] \
@@ -238,17 +250,32 @@ GOT=$(cmux_wait_session_start "/Users/x/other" 1 || true)
   || fail "a session start in another cwd is not ours" "got '$GOT'"
 
 # A cwd is not unique to a call: the operator's own claude session in the same
-# directory emits an identical-looking SessionStart. With a preset id known, the
-# match must be exact, and the frame then confirms the preset.
-GOT=$(cmux_wait_session_start "/Users/x/proj" 1 "abc-123" || true)
-[[ "$GOT" == "abc-123" ]] \
-  && pass "a known preset session id is confirmed by the frame" \
-  || fail "a known preset session id is confirmed by the frame" "got '$GOT'"
+# directory emits an identical-looking SessionStart. With a preset known, the
+# match must be exact — and it has to see through the base64 wrapper to make it.
+GOT=$(cmux_wait_session_start "/Users/x/proj" 1 "$UUID" || true)
+[[ "$GOT" == "$UUID" ]] \
+  && pass "a preset uuid matches inside the composite, and comes back BARE" \
+  || fail "a preset uuid matches inside the composite, and comes back BARE" "got '$GOT'"
 
-GOT=$(cmux_wait_session_start "/Users/x/proj" 1 "some-other-session" || true)
+# The composite must never reach the caller: session_id.txt, transcript paths and
+# the call registry all need the uuid.
+case "$GOT" in
+  cmux-feed-v1:*) fail "the composite feed id never reaches the caller" "got '$GOT'" ;;
+  *)              pass "the composite feed id never reaches the caller" ;;
+esac
+
+GOT=$(cmux_wait_session_start "/Users/x/proj" 1 "00000000-0000-0000-0000-000000000000" || true)
 [[ -z "$GOT" ]] \
   && pass "another session booting in the same cwd is not mistaken for ours" \
   || fail "another session booting in the same cwd is not mistaken for ours" "got '$GOT'"
+
+# Defensive: a build that stops wrapping the id must not silently kill signal D.
+frames
+frame "{\"name\":\"agent.hook.SessionStart\",\"seq\":51,\"surface_id\":null,\"payload\":{\"phase\":\"completed\",\"session_id\":\"$UUID\",\"cwd\":\"/Users/x/proj\"}}"
+GOT=$(cmux_wait_session_start "/Users/x/proj" 1 "$UUID" || true)
+[[ "$GOT" == "$UUID" ]] \
+  && pass "a bare (unwrapped) session id still matches a preset" \
+  || fail "a bare (unwrapped) session id still matches a preset" "got '$GOT'"
 
 # --- 10. The wait returns when the FRAME arrives, not when the window ends ----
 # This is the case that decides whether migrating off read-screen polling is an

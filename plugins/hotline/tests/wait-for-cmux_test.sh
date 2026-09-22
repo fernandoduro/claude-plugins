@@ -761,10 +761,17 @@ case "$1" in
     cat "${CMUX_FAKE_SCREEN:?}" ;;
   events)
     shift
+    snap=0; noack=0
     for a in "$@"; do
-      [[ "$a" == "--snapshot" ]] && {
-        printf '{"type":"ack","resume":{"oldest_seq":1,"latest_seq":100,"gap":false}}\n'; exit 0; }
+      [[ "$a" == "--snapshot" ]] && snap=1
+      [[ "$a" == "--no-ack"   ]] && noack=1
     done
+    if [[ $snap -eq 1 ]]; then
+      # Real cmux prints ONLY the ack for --snapshot, so --no-ack yields nothing.
+      [[ $noack -eq 1 ]] && exit 0
+      printf '{"type":"ack","resume":{"oldest_seq":1,"latest_seq":100,"gap":false}}\n'
+      exit 0
+    fi
     # The retained buffer replays, so a baselined --after still sees the frame.
     [[ -n "${CMUX_FAKE_SESSION_EVENT:-}" ]] && printf '%s\n' "$CMUX_FAKE_SESSION_EVENT"
     # A real `cmux events --timeout N` holds the stream for its window then exits.
@@ -789,7 +796,10 @@ printf 'nothing that looks like a REPL here\n' > "$tmp/screen.txt"
 cd="$tmp/call"
 stage_surface_call_dir "$cd" "evt-preset-1" "surface:777"
 echo "/Users/x/proj" > "$cd/cwd.txt"
-EVT='{"name":"agent.hook.SessionStart","seq":42,"surface_id":"SURF-UUID-777","payload":{"phase":"completed","session_id":"evt-preset-1","cwd":"/Users/x/proj"}}'
+# cmux wraps the session id: cmux-feed-v1:<base64 agent>:<base64 session id>.
+# With a bare id here, signal D passed while it could not match live.
+EVT_B64=$(printf '%s' "evt-preset-1" | base64 | tr -d '\n')
+EVT="{\"name\":\"agent.hook.SessionStart\",\"seq\":42,\"surface_id\":\"SURF-UUID-777\",\"payload\":{\"phase\":\"completed\",\"session_id\":\"cmux-feed-v1:Y2xhdWRl:${EVT_B64}\",\"cwd\":\"/Users/x/proj\"}}"
 out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_SCREEN="$tmp/screen.txt" CMUX_FAKE_STATE="$tmp" \
   CMUX_FAKE_SESSION_EVENT="$EVT" \
   bash "$WAIT_SESSION" "$cd" --timeout 6 2>"$tmp/err.txt")
@@ -799,6 +809,14 @@ if [[ $rc -eq 0 && "$out" == "evt-preset-1" ]]; then
 else
   fail "signal D: a SessionStart boots the wait with no banner, box or transcript" \
        "rc=$rc stdout=$out stderr=$(cat "$tmp/err.txt")"
+fi
+# The composite feed id must never be what gets promoted: transcript paths and
+# the call registry are both built from session_id.txt.
+if grep -q 'cmux-feed-v1' "$cd/session_id.txt" 2>/dev/null; then
+  fail "signal D: session_id.txt holds the bare id, not cmux's composite" \
+       "got $(cat "$cd/session_id.txt")"
+else
+  pass "signal D: session_id.txt holds the bare id, not cmux's composite"
 fi
 rm -rf "$tmp"
 
@@ -812,7 +830,8 @@ printf 'nothing that looks like a REPL here\n' > "$tmp/screen.txt"
 cd="$tmp/call"
 stage_surface_call_dir "$cd" "evt-preset-2" "surface:777"
 echo "/Users/x/proj" > "$cd/cwd.txt"
-EVT='{"name":"agent.hook.SessionStart","seq":43,"surface_id":"SURF-UUID-777","payload":{"phase":"completed","session_id":"SOMEONE-ELSES-SESSION","cwd":"/Users/x/proj"}}'
+OTHER_B64=$(printf '%s' "SOMEONE-ELSES-SESSION" | base64 | tr -d '\n')
+EVT="{\"name\":\"agent.hook.SessionStart\",\"seq\":43,\"surface_id\":\"SURF-UUID-777\",\"payload\":{\"phase\":\"completed\",\"session_id\":\"cmux-feed-v1:Y2xhdWRl:${OTHER_B64}\",\"cwd\":\"/Users/x/proj\"}}"
 out=$(PATH="$tmp/bin:$PATH" CMUX_FAKE_SCREEN="$tmp/screen.txt" CMUX_FAKE_STATE="$tmp" \
   CMUX_FAKE_SESSION_EVENT="$EVT" \
   bash "$WAIT_SESSION" "$cd" --timeout 4 2>"$tmp/err.txt")

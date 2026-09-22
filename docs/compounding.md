@@ -380,6 +380,17 @@ review/PR time; the `publish-release` runbook runs that scan at ship time.
   makes a socket-stub suite fail on macOS while CI's `/tmp` stays green. Keep those
   names short; `socket_stub_start` says so out loud when a path is over.
   (claude-plugins-ai7s, cmux-reuse-surface_test.sh:1068)
+- **Derive a stub's payload shapes from a real capture, never from the doc or from
+  imagination.** Invented shapes make a suite agree with itself: three bugs in the
+  cmux-events reader survived 30 green stub-driven cases and a full set of positive
+  controls, and all three were found by the first read-only call against real cmux —
+  `--snapshot --no-ack` returns nothing because the ack is the whole output, and
+  `payload.session_id` is a `cmux-feed-v1:<base64>:<base64>` composite that no
+  equality test against a bare uuid can match and that must never be passed on to a
+  caller. Capture a replay (`cmux events --after 0 … | jq`), build the fixtures from
+  those frames, and re-check any field a doc calls "exact" AT and ABOVE its stated
+  cap — `message_length` is capped at 240 and had been generalized as
+  character-exact from two samples of 119 and 43. (claude-plugins-056z)
 - **A fixture has to model the state the bug destroys, not a milder version of it.** A
   "user has scrolled up" screen that still rendered the input box left every
   box-shaped gate working, so no test could have caught the reads that followed the

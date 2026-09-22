@@ -65,8 +65,10 @@ cmux_handle_ok() {
 # Five traps are handled here so no caller has to remember them:
 #
 #   1. The ack frame goes to STDOUT and carries no `.name`, and the timeout
-#      message goes to STDERR. Both break a naive jq filter, so every invocation
-#      is `--no-ack --no-heartbeat 2>/dev/null`.
+#      message goes to STDERR. Both break a naive jq filter, so every frame READ
+#      is `--no-ack --no-heartbeat 2>/dev/null`. THE EXCEPTION IS `--snapshot`,
+#      which prints the ack and exits — there the ack is the payload, and adding
+#      `--no-ack` suppresses the only line it emits and returns nothing at all.
 #   2. `--limit` counts FRAMES, not matches. When a jq filter does the narrowing,
 #      bound the wait with `--timeout` and stop at the first match instead.
 #   2b. The `--name` narrowing is cmux's, server-side. The query builders below
@@ -101,8 +103,14 @@ cmux_events_supported() {
     return 1
   fi
   [[ -n "$HOTLINE_CMUX_EVENTS_CACHE" ]] && return "$HOTLINE_CMUX_EVENTS_CACHE"
-  if cmux events --snapshot --no-ack --no-heartbeat >/dev/null 2>&1 \
-     || cmux events --snapshot >/dev/null 2>&1; then
+  # Probe by PARSING a seq, not by exit code. `cmux events --snapshot` exits 0
+  # even when its output is suppressed or unreadable, so an exit-code probe
+  # reports a usable stream for a cmux whose frames we cannot read — and then
+  # every waiter arms against a marker it never got.
+  local probe
+  probe=$(cmux events --snapshot --no-heartbeat 2>/dev/null \
+          | jq -r '.resume.latest_seq // empty' 2>/dev/null) || true
+  if [[ -n "$probe" && "$probe" != "null" ]]; then
     HOTLINE_CMUX_EVENTS_CACHE=0
   else
     HOTLINE_CMUX_EVENTS_CACHE=1
@@ -117,7 +125,11 @@ cmux_events_supported() {
 cmux_events_seq() {
   cmux_events_supported || return 1
   local seq
-  seq=$(cmux events --snapshot --no-ack --no-heartbeat 2>/dev/null \
+  # NO --no-ack HERE. `--snapshot` prints the subscription ack and exits, so the
+  # ack IS the payload — `--snapshot --no-ack` suppresses the only line it emits
+  # and yields nothing, silently. The "scripted use is always --no-ack" rule
+  # applies to frame READS, where the ack is noise; this is the exception.
+  seq=$(cmux events --snapshot --no-heartbeat 2>/dev/null \
         | jq -r '.resume.latest_seq // empty' 2>/dev/null) || true
   [[ -n "$seq" && "$seq" != "null" ]] || return 1
   printf '%s' "$seq"
@@ -223,30 +235,56 @@ cmux_wait_surface_created() {
 }
 
 # cmux_wait_session_start <cwd> <timeout> [expect_session_id]
-#   — prints the callee's claude session_id once its REPL has booted.
+#   — prints the callee's BARE claude session uuid once its REPL has booted.
 #
 # Matches on payload.cwd because this signal can arrive before we know which
-# surface the session landed in; mapping a session id onto a surface is what the
-# rest of its payload is for.
+# surface the session landed in.
 #
 # PASS THE EXPECTED SESSION ID WHENEVER ONE IS KNOWN. A cwd is not unique to a
 # call: the operator's own claude session running in the same directory emits an
 # identical-looking SessionStart, and a cwd-only match would promote a boot that
 # is not ours. Callers that launched with a preset `--session-id` know exactly
 # which id to expect, so the match becomes exact — and the frame then CONFIRMS
-# the preset instead of the caller having to assume claude honoured it, which
-# nothing verified before.
+# the preset instead of the caller having to assume claude honoured it.
+#
+# `payload.session_id` IS NOT A BARE UUID. cmux reports a composite feed id,
+#   cmux-feed-v1:<base64 of the agent name>:<base64 of the session uuid>
+# e.g. `cmux-feed-v1:Y2xhdWRl:ZDFkNzIyYjkt…` for claude session
+# d1d722b9-d8c1-42ef-987e-468ce2662c73 (measured live on cmux 0.64.25). Two
+# consequences, both of which made this function useless before they were fixed:
+# an equality test against a bare preset can never match, and RETURNING the
+# frame's value would hand the caller a composite where every consumer —
+# session_id.txt, transcript paths, the call registry — needs the uuid. A uuid
+# is 36 bytes, so its base64 is padding-free and a substring test is exact.
 cmux_wait_session_start() {
   local cwd="$1" timeout="${2:-120}" expect="${3:-}"
   local idsel=""
-  [[ -n "$expect" ]] && idsel=" and (.payload.session_id // \"\") == \"$expect\""
+  if [[ -n "$expect" ]]; then
+    local expect_b64
+    expect_b64=$(printf '%s' "$expect" | base64 | tr -d '\n')
+    # Accept either spelling: the composite cmux reports today, or a bare uuid,
+    # so a build that stops wrapping it does not silently kill this signal.
+    idsel=" and ((.payload.session_id // \"\") | (. == \"$expect\" or contains(\"$expect_b64\")))"
+  fi
   local frame
   frame=$(cmux_events_first "$timeout" \
     "select(.payload.phase == \"completed\" and (.payload.cwd // \"\") == \"$cwd\"$idsel)" \
     agent.hook.SessionStart) || return 1
+
+  # Matched on a preset: return the preset. It is the bare uuid by construction,
+  # and the frame's own value is the composite.
+  if [[ -n "$expect" ]]; then
+    printf '%s' "$expect"
+    return 0
+  fi
+
   local sid
   sid=$(printf '%s' "$frame" | jq -r '.payload.session_id // empty' 2>/dev/null) || true
   [[ -n "$sid" && "$sid" != "null" ]] || return 1
+  case "$sid" in
+    cmux-feed-v1:*) sid=$(printf '%s' "${sid##*:}" | base64 -d 2>/dev/null) || return 1 ;;
+  esac
+  [[ -n "$sid" ]] || return 1
   printf '%s' "$sid"
 }
 
@@ -255,6 +293,14 @@ cmux_wait_session_start() {
 # SubagentStop and SessionEnd are matched alongside Stop: a callee that exits
 # instead of settling is still a turn that ended, and waiting for a Stop that
 # will never come is how a poller hangs to its deadline.
+#
+# THE SURFACE MATCH IS WEAK, DELIBERATELY. `agent.hook.Stop` carries a null
+# `surface_id` on a large share of real frames, so the null fallback below is
+# what makes it match at all — and that same fallback means ANY session's turn
+# end satisfies this call. Fine for "something finished"; NOT sufficient for
+# "the callee I dialed finished". A caller that must attribute the turn should
+# discriminate on `payload.cwd` or `payload.session_id` (a composite — see
+# cmux_wait_session_start), both of which real frames do carry.
 cmux_wait_turn_end() {
   local surf="$1" timeout="${2:-600}"
   cmux_events_first "$timeout" \

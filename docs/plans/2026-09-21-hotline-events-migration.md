@@ -137,52 +137,35 @@ fallback).
 
 ### Phase 3 (sequential — highest value first)
 
-**3a. `cmux-paste.sh`** — an integrity check ABOVE the ladder, not a
-replacement of it. The plan originally said to replace the confirmation ladder
-at lines 404–560. That is wrong, and the reason matters:
+**3a. `cmux-paste.sh`** — **fragmentation detection only.** The length half of
+this idea is dead, measured live on cmux 0.64.25:
 
-The PRIMARY tier is **already byte-definitive** — a `grep -F` for the call-id
-nonce in the callee's transcript. It is not screen forensics, it reads submitted
-bytes, and `workspace.prompt.submitted` is not stronger than it for the question
-it answers ("did the payload reach the callee's session?"). Replacing it would
-trade a stronger signal for a weaker one.
+`workspace.prompt.submitted`'s `message_length` **is capped at 240** — it is the
+length of the 240-char `message_preview`, not of the message. Over a 900-frame
+replay: 21 submissions, all 21 with
+`message_length == (message_preview | length)`, 14 at exactly 240, none above,
+and those 14 were 6 distinct messages whose previews end mid-token. The earlier
+"character-exact" reading came from two plaintexts of 119 and 43 chars — both
+under the cap, so both agreed. Every real hotline work order is far longer than
+240, so a whole payload and a truncated one both report 240 and the field can
+never detect truncation of one.
 
-What events add is a failure class **neither existing tier can see**:
+So do NOT replace the confirmation ladder, and do not add a length verdict. The
+PRIMARY tier is already byte-definitive (a `grep -F` for the call-id nonce in the
+callee's transcript) and remains the only thing that covers a long payload.
 
-`hotline_inject_call_id` places the nonce at the HEAD of the payload — a
-prepended `[CALL_ID: …]` line, or inline on the first line of a slash command.
-So a payload truncated at the TAIL still carries the nonce. The transcript grep
-finds it, `confirmed_by_transcript` returns 0, and the delivery is reported
-`confirmed:"transcript"` while the callee holds a partial work order. Silent byte
-loss is structurally invisible to every tier in the current ladder.
-`message_length` is the only thing that sees it, and a frame COUNT above one is
-the only thing that sees fragmentation.
+What is still worth adding, and needs no calibration: **a frame COUNT**. Two
+`workspace.prompt.submitted` frames for one send is fragmentation — the callee
+received the work order split across turns — and the current ladder reports that
+as a clean delivery. Baseline `cmux_events_seq` before the paste, count frames
+after, and report the count in an additive JSON field beside `confirmed`.
+`delivered`/`confirmed` must NOT change: a fragmented payload IS in the callee's
+queue, and calling it undelivered invites a double-delivery.
 
-So 3a is: baseline `cmux_events_seq` before the paste, and after the ladder
-resolves, compare `cmux_submit_lengths "$WS_ID"` against the payload's own
-character count. Report it in additive JSON fields beside `confirmed` —
-`delivered`/`confirmed` must NOT change, because a truncated payload IS in the
-callee's queue and calling it undelivered would invite a double-delivery.
-
-**Two things block making it default-on, and both need one live measurement:**
-
-1. **Cost.** `cmux_events_all` cannot return early (see phase 1), so
-   `cmux_submit_lengths` spends its whole settle window on EVERY paste. The
-   current ladder confirms in well under a second. Wiring a 2s window into the
-   delivery path is a per-dial regression for report-only data.
-2. **Calibration.** The expected length is not known to equal `wc -m` of the
-   payload file. A trailing newline, the REPL's own trimming, and character-vs-
-   byte counting each shift it by an unmeasured offset, and `message_length` was
-   verified character-exact against *known plaintexts*, never against a hotline
-   payload through the paste path. Guessing a tolerance ships a false-warning
-   generator into every delivery.
-
-**Frame COUNT needs no calibration** — two frames for one send is fragmentation
-whatever the offset. That half can land first, cheaply, and is where to start.
-
-Take the calibration measurement by pasting one payload of known length through
-a real dial and reading its `workspace.prompt.submitted` frame, then fix the
-offset in the comparison. Until then do not enable a length verdict.
+Mind the cost: `cmux_events_all` cannot return early, so `cmux_submit_lengths`
+spends its whole settle window (default 2s) on every call, against a ladder that
+confirms in well under a second. Either accept that on the confirm path only, or
+gate it behind an env flag. Do not raise the window.
 
 **3b. `cmux-reuse-surface.sh`** — preflight only. `cmux_send_landed_on` after
 each send is the mechanical form of the substituted-target check that
@@ -192,9 +175,21 @@ each send is the mechanical form of the substituted-target check that
 contract must survive; do not "fix" it to accommodate a change.
 
 **3c. `wait-for-response.sh`** — the gate only. Replace the 2s cmux-mode poll
-with `cmux_wait_turn_end`, then read the transcript exactly as now. Leave the
+with a turn-end wait, then read the transcript exactly as now. Leave the
 transcript tier, the nonce bracketing and the 0/3/4/5 exit contract alone.
 Suite: `wait-for-response_test.sh`, `transport-signal_test.sh`.
+
+**`cmux_wait_turn_end` as it stands is NOT sufficient here.** Measured live:
+`agent.hook.Stop` carries a null `surface_id` on most real frames, so the null
+fallback in that filter is what makes it match at all — and that same fallback
+means ANY session's turn end satisfies it, including the operator's own. A
+caller waiting on callee X would wake on the user finishing a turn. Real frames
+do carry `payload.cwd` and `payload.session_id`, so discriminate on those.
+
+Note `payload.session_id` is a composite, `cmux-feed-v1:<base64 agent
+name>:<base64 session uuid>` — see `cmux_wait_session_start` in `repl-state.sh`
+for the match-and-decode already written for it. An equality test against a bare
+uuid never matches.
 
 ## Before dispatching anything: the install is stale
 
