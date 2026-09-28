@@ -155,7 +155,7 @@ to write its report to a file and read the file.
 | "Let me read the threads/diff first so the prompt is better" | Close the diff; the four recon facts are enough. State the item's location and let the session read it |
 | Splitting one tab N ways | Close the extra panes and create one tab per item |
 | Launching before the go-ahead | Close the tabs you created, present the table, wait |
-| A work order with no Workplace slot | Add it before dispatching, or the sessions fight over one checkout |
+| A work order with no Workplace slot, or one that starts in a main checkout without isolating | Add the slot — the existing worktree, or "create one first" as step zero — or the sessions fight over one checkout |
 | A screenshot's reviewer/next-step copied in unverified | Confirm it against the source of truth, and report the mismatch in the table |
 | A session told to merge, approve, close, deploy, or ping a teammate that nobody authorized | Remove it from the order, and surface it as a recommendation in your report |
 
@@ -165,7 +165,6 @@ to write its report to a file and read the file.
 |---|---|
 | Work order says "address the review feedback" | Name the file:line and reviewer you verified; vague orders make the session re-derive your recon |
 | Every session gets the same generic prompt | The verb differs per item — a review, an implementation, and an investigation need different workflows and different finish lines |
-| Session starts in a main checkout with no isolation instruction | Give it its worktree, or make "create one first" step zero |
 | Orchestrator keeps polling the sessions | Report once and stop unless asked to supervise |
 | Dispatching into `/tmp` or another untrusted path | The session never starts — it sits on the folder-trust dialog. Dry-run first; the warning names the row |
 | Prompt text quotes a banned command to forbid it | Describe the prohibition; guard hooks match your literal text (see the template's hook note) |
