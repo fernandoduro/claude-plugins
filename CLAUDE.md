@@ -290,6 +290,12 @@ needs a tool that may be absent, self-skip with exit 0 and say so on stdout.
 
 Anything that reaches a real database, a real API, or `cmux` must be stubbed — the
 handoff suite stubs `bd` via `PATH`. Tests must never touch a real beads database.
+Today's `bd` stubs only return canned fixtures; when a test needs real bd state
+(create → update → list round-trips, ready/blocked, dep graphs), use
+[bd-fake](https://github.com/jtsternberg/bd-fake) instead: a contract-tested fake
+`bd` with bd 1.3.0 output shapes that fails loudly on unknown verbs/flags
+(`npm install -g github:jtsternberg/bd-fake#v0.1.0`, symlink as `bd` first on `PATH`).
+CI would need that install step too.
 
 ### The parser drift guard
 
