@@ -46,6 +46,9 @@ while [[ $# -gt 0 ]]; do
 			echo "  --repo <path>  Optional. Path to repository (defaults to current directory)"
 			echo "  --create       Optional. Create branch if it doesn't exist"
 			echo "  --dry-run      Optional. Show what would be done without making changes"
+			echo ""
+			echo "Environment:"
+			echo "  GIT_TREE_WORKTREES_DIR  Optional. Create worktrees at \$GIT_TREE_WORKTREES_DIR/<repo>/<branch> instead of ../gittree-<branch>"
 			exit 0
 			;;
 		*)
@@ -82,12 +85,17 @@ fi
 # Get the repository name
 REPO_NAME=$(basename "$REPO_PATH")
 
-# Get the parent directory
-PARENT_DIR=$(dirname "$REPO_PATH")
-
-# Create worktree name with gittree- prefix
-WORKTREE_NAME="gittree-${BRANCH}"
-WORKTREE_PATH="${PARENT_DIR}/${WORKTREE_NAME}"
+# GIT_TREE_WORKTREES_DIR set: <root>/<origin repo name>/<branch, slashes as dashes>, deps linked absolutely.
+# Unset: a gittree-<branch> sibling of the repo, deps linked relatively.
+if [[ -n "${GIT_TREE_WORKTREES_DIR:-}" ]]; then
+	ORIGIN_URL=$(git -C "$REPO_PATH" remote get-url origin 2>/dev/null || true)
+	REPO_KEY=$(basename "${ORIGIN_URL:-$REPO_PATH}" .git)
+	WORKTREE_PATH="${GIT_TREE_WORKTREES_DIR%/}/${REPO_KEY}/${BRANCH//\//-}"
+	LINK_BASE="$REPO_PATH"
+else
+	WORKTREE_PATH="$(dirname "$REPO_PATH")/gittree-${BRANCH}"
+	LINK_BASE="../${REPO_NAME}"
+fi
 
 # Check if worktree already exists
 if [[ -d "$WORKTREE_PATH" ]]; then
@@ -121,9 +129,9 @@ if [[ "$DRY_RUN" == true ]]; then
 	fi
 	echo ""
 	echo "2. Create symlinks (if sources exist):"
-	[[ -d "$REPO_PATH/vendor" ]] && echo "   - vendor → ../${REPO_NAME}/vendor"
-	[[ -d "$REPO_PATH/node_modules" ]] && echo "   - node_modules → ../${REPO_NAME}/node_modules"
-	[[ -f "$REPO_PATH/.env" ]] && echo "   - .env → ../${REPO_NAME}/.env"
+	[[ -d "$REPO_PATH/vendor" ]] && echo "   - vendor → ${LINK_BASE}/vendor"
+	[[ -d "$REPO_PATH/node_modules" ]] && echo "   - node_modules → ${LINK_BASE}/node_modules"
+	[[ -f "$REPO_PATH/.env" ]] && echo "   - .env → ${LINK_BASE}/.env"
 	[[ ! -d "$REPO_PATH/vendor" && ! -d "$REPO_PATH/node_modules" && ! -f "$REPO_PATH/.env" ]] && echo "   (none found)"
 	echo ""
 	exit 0
@@ -159,22 +167,22 @@ SYMLINKS_CREATED=0
 
 # Symlink vendor directory
 if [[ -d "$REPO_PATH/vendor" ]]; then
-	echo "Creating symlink: vendor → ../${REPO_NAME}/vendor"
-	ln -s "../${REPO_NAME}/vendor" "$WORKTREE_PATH/vendor"
+	echo "Creating symlink: vendor → ${LINK_BASE}/vendor"
+	ln -s "${LINK_BASE}/vendor" "$WORKTREE_PATH/vendor"
 	SYMLINKS_CREATED=$((SYMLINKS_CREATED + 1))
 fi
 
 # Symlink node_modules directory
 if [[ -d "$REPO_PATH/node_modules" ]]; then
-	echo "Creating symlink: node_modules → ../${REPO_NAME}/node_modules"
-	ln -s "../${REPO_NAME}/node_modules" "$WORKTREE_PATH/node_modules"
+	echo "Creating symlink: node_modules → ${LINK_BASE}/node_modules"
+	ln -s "${LINK_BASE}/node_modules" "$WORKTREE_PATH/node_modules"
 	SYMLINKS_CREATED=$((SYMLINKS_CREATED + 1))
 fi
 
 # Symlink .env file
 if [[ -f "$REPO_PATH/.env" ]]; then
-	echo "Creating symlink: .env → ../${REPO_NAME}/.env"
-	ln -s "../${REPO_NAME}/.env" "$WORKTREE_PATH/.env"
+	echo "Creating symlink: .env → ${LINK_BASE}/.env"
+	ln -s "${LINK_BASE}/.env" "$WORKTREE_PATH/.env"
 	SYMLINKS_CREATED=$((SYMLINKS_CREATED + 1))
 fi
 

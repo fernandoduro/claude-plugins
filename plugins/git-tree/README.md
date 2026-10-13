@@ -37,6 +37,8 @@ GIT_TREE_ROOT="${CLAUDE_PLUGIN_ROOT}"
 - `--repo <path>`: Target repository (defaults to current directory)
 - `--create`: Create branch if it doesn't exist
 
+Set `GIT_TREE_WORKTREES_DIR` to keep every worktree under one folder: `$GIT_TREE_WORKTREES_DIR/<origin repo name>/<branch with / as ->`, with vendor/node_modules/.env linked absolutely. Unset, the worktree is a `gittree-<branch>` sibling of the repo.
+
 ## Example
 
 ```

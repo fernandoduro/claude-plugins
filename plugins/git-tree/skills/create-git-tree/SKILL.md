@@ -25,6 +25,8 @@ Run the resolved script with the branch name. If no branch is provided, ask the 
 - `--repo <path>`: Target repository (defaults to cwd)
 - `--create`: Create branch if it doesn't exist
 
+**Location:** a `gittree-<branch>` sibling of the repo. If `GIT_TREE_WORKTREES_DIR` is set, `$GIT_TREE_WORKTREES_DIR/<origin repo name>/<branch with / as ->` instead, with vendor/node_modules/.env linked absolutely.
+
 **Success output:**
 ```
 Worktree created successfully
